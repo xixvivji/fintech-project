@@ -19,7 +19,6 @@ public class StockService {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
 
-        // Map을 사용하여 안전하게 JSON 바디 생성
         Map<String, String> bodyMap = new HashMap<>();
         bodyMap.put("grant_type", "client_credentials");
         bodyMap.put("appkey", APP_KEY.trim());
@@ -48,7 +47,7 @@ public class StockService {
         headers.set("appsecret", APP_SECRET.trim());
         headers.set("tr_id", "FHKST03010100");
 
-        // --- [날짜 자동 계산 로직 추가] ---
+
         // 1. 오늘 날짜 (종료일)
         String today = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
         // 2. 6개월 전 날짜 (시작일) - 더 길게 보고 싶으면 .minusYears(1) 등으로 수정 가능
@@ -71,7 +70,7 @@ public class StockService {
             for (int i = output2.size() - 1; i >= 0; i--) {
                 Map<String, String> d = output2.get(i);
                 String rawDate = d.get("stck_bsop_date");
-                // "20240221" -> "2024-02-21" 포맷 변경
+
                 String formattedDate = rawDate.substring(0, 4) + "-" + rawDate.substring(4, 6) + "-" + rawDate.substring(6, 8);
 
                 chartData.add(new ChartDataDto(
