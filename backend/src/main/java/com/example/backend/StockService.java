@@ -8,12 +8,14 @@ import org.springframework.web.client.RestTemplate;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class StockService {
     private static final long MIN_REQUEST_INTERVAL_MS = 400L;
     private static final int MAX_RATE_LIMIT_RETRY = 3;
     private static final int MAX_CHUNK_REQUESTS = 30;
+    private static final long CHART_CACHE_TTL_MS = 20_000L;
 
     @Value("${kis.app-key}")
     private String appKey;
@@ -32,6 +34,7 @@ public class StockService {
     private final Object kisRequestLock = new Object();
     private final Object tokenLock = new Object();
     private long lastKisRequestAt = 0L;
+    private final ConcurrentHashMap<String, CacheEntry> chartCache = new ConcurrentHashMap<>();
 
     private void fetchAccessToken() {
         validateConfig();
@@ -67,8 +70,12 @@ public class StockService {
     }
 
     public List<ChartDataDto> getDailyChart(String stockCode, int months) {
-        ensureAccessToken();
         int rangeMonths = Math.max(1, Math.min(months, 120));
+        String cacheKey = stockCode + ":" + rangeMonths;
+        List<ChartDataDto> cached = getCachedChart(cacheKey);
+        if (cached != null) return cached;
+
+        ensureAccessToken();
 
         RestTemplate restTemplate = new RestTemplate();
         HttpHeaders headers = new HttpHeaders();
@@ -131,6 +138,7 @@ public class StockService {
         }
 
         chartData.sort(Comparator.comparing(ChartDataDto::getTime));
+        putCachedChart(cacheKey, chartData);
         return chartData;
     }
 
@@ -237,6 +245,32 @@ public class StockService {
             return Double.parseDouble(value);
         } catch (NumberFormatException e) {
             return null;
+        }
+    }
+
+    private List<ChartDataDto> getCachedChart(String cacheKey) {
+        CacheEntry entry = chartCache.get(cacheKey);
+        long now = System.currentTimeMillis();
+        if (entry == null) return null;
+        if (entry.expiresAtMs <= now) {
+            chartCache.remove(cacheKey);
+            return null;
+        }
+        return new ArrayList<>(entry.data);
+    }
+
+    private void putCachedChart(String cacheKey, List<ChartDataDto> data) {
+        long expiresAt = System.currentTimeMillis() + CHART_CACHE_TTL_MS;
+        chartCache.put(cacheKey, new CacheEntry(new ArrayList<>(data), expiresAt));
+    }
+
+    private static class CacheEntry {
+        private final List<ChartDataDto> data;
+        private final long expiresAtMs;
+
+        private CacheEntry(List<ChartDataDto> data, long expiresAtMs) {
+            this.data = data;
+            this.expiresAtMs = expiresAtMs;
         }
     }
 }

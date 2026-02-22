@@ -1,4 +1,4 @@
-import React, { useMemo, useEffect, useRef, useState } from 'react';
+import React, { useMemo, useEffect, useRef, useState, useCallback } from 'react';
 import { createChart } from 'lightweight-charts';
 import axios from 'axios';
 
@@ -9,6 +9,7 @@ const PERIOD_OPTIONS = [
     { label: '3년', value: 36 },
     { label: '5년', value: 60 },
 ];
+const API_BASE_URL = 'http://localhost:8080';
 
 const STOCK_OPTIONS = [
     { name: '삼성전자', code: '005930' },
@@ -44,16 +45,57 @@ const STOCK_OPTIONS = [
     { name: 'SK이노베이션', code: '096770' },
 ];
 
-const QUICK_PICK_CODES = ['005930', '000660', '035420', '035720', '373220', '005380'];
+const MAX_ACTIVE_CHARTS = 5;
+const APPLY_DEBOUNCE_MS = 800;
 
 function getStockNameByCode(code) {
     const stock = STOCK_OPTIONS.find((item) => item.code === code);
     return stock ? stock.name : code;
 }
 
+function mapServerErrorMessage(message) {
+    if (!message || typeof message !== 'string') return '';
+    if (message.includes('EGW00133')) {
+        return '토큰 발급 제한에 걸렸습니다. 잠시 후(약 1분) 다시 시도해 주세요.';
+    }
+    if (message.includes('EGW00201')) {
+        return '요청이 너무 빠릅니다. 조회 속도를 자동으로 조절 중이니 잠시 후 다시 시도해 주세요.';
+    }
+    if (message.includes('output2 없음')) {
+        return '해당 기간에 조회 가능한 데이터가 없습니다.';
+    }
+    return message;
+}
+
+function normalizeCodes(codes) {
+    return Array.from(new Set(codes.filter(Boolean)));
+}
+
+function normalizeCandleData(rawData) {
+    if (!Array.isArray(rawData)) return [];
+
+    const byTime = new Map();
+    for (const item of rawData) {
+        const time = item?.time;
+        const open = Number(item?.open);
+        const high = Number(item?.high);
+        const low = Number(item?.low);
+        const close = Number(item?.close);
+
+        if (typeof time !== 'string' || time.length !== 10) continue;
+        if (![open, high, low, close].every(Number.isFinite)) continue;
+        if (high < low) continue;
+
+        byTime.set(time, { time, open, high, low, close });
+    }
+
+    return Array.from(byTime.values()).sort((a, b) => a.time.localeCompare(b.time));
+}
+
 function StockChartCard({ code, months, requestDelayMs }) {
     const chartContainerRef = useRef(null);
     const chartRef = useRef(null);
+    const requestSeqRef = useRef(0);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
 
@@ -85,21 +127,31 @@ function StockChartCard({ code, months, requestDelayMs }) {
         setLoading(true);
         setError('');
 
+        const requestSeq = ++requestSeqRef.current;
+        const controller = new AbortController();
+
         const timer = setTimeout(() => {
             axios
-                .get(`http://localhost:8080/api/stock/chart/${code}`, { params: { months } })
+                .get(`${API_BASE_URL}/api/stock/chart/${code}`, {
+                    params: { months },
+                    signal: controller.signal,
+                })
                 .then((res) => {
-                    if (!Array.isArray(res.data) || res.data.length === 0) {
+                    if (requestSeq !== requestSeqRef.current) return;
+                    const normalized = normalizeCandleData(res.data);
+                    if (normalized.length === 0) {
                         setError('데이터가 없습니다. 종목 코드를 확인해 주세요.');
                         return;
                     }
-                    candlestickSeries.setData(res.data);
+                    candlestickSeries.setData(normalized);
                     chart.timeScale().fitContent();
                 })
                 .catch((err) => {
+                    if (requestSeq !== requestSeqRef.current) return;
+                    if (err?.code === 'ERR_CANCELED') return;
                     const serverMessage = err?.response?.data?.message;
                     if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
-                        setError(serverMessage);
+                        setError(mapServerErrorMessage(serverMessage));
                         return;
                     }
                     const runtimeMessage = err?.message;
@@ -110,6 +162,7 @@ function StockChartCard({ code, months, requestDelayMs }) {
                     setError('조회 실패: 백엔드 실행 상태와 종목 코드를 확인해 주세요.');
                 })
                 .finally(() => {
+                    if (requestSeq !== requestSeqRef.current) return;
                     setLoading(false);
                 });
         }, requestDelayMs);
@@ -126,6 +179,7 @@ function StockChartCard({ code, months, requestDelayMs }) {
 
         return () => {
             clearTimeout(timer);
+            controller.abort();
             window.removeEventListener('resize', handleResize);
             if (chartRef.current) {
                 chartRef.current.remove();
@@ -137,6 +191,8 @@ function StockChartCard({ code, months, requestDelayMs }) {
     return (
         <div
             style={{
+                width: '100%',
+                minWidth: 0,
                 padding: '12px',
                 backgroundColor: '#fff',
                 borderRadius: '10px',
@@ -156,55 +212,144 @@ function StockChartCard({ code, months, requestDelayMs }) {
 }
 
 function App() {
-    const [selectedCodes, setSelectedCodes] = useState(['005930', '000660', '035420']);
+    const [viewCodes, setViewCodes] = useState([]);
+    const [watchlistCodes, setWatchlistCodes] = useState([]);
     const [monthsInput, setMonthsInput] = useState(24);
     const [searchQuery, setSearchQuery] = useState('');
+    const [uiMessage, setUiMessage] = useState('');
+    const [lastApplyAt, setLastApplyAt] = useState(0);
+    const [isNarrowScreen, setIsNarrowScreen] = useState(window.innerWidth < 1024);
+    const [watchlistLoading, setWatchlistLoading] = useState(false);
     const [applied, setApplied] = useState({
-        codes: ['005930', '000660', '035420'],
+        codes: [],
         months: 24,
     });
 
-    const selectedCodeSet = useMemo(() => new Set(selectedCodes), [selectedCodes]);
+    const viewCodeSet = useMemo(() => new Set(viewCodes), [viewCodes]);
+    const watchlistCodeSet = useMemo(() => new Set(watchlistCodes), [watchlistCodes]);
+
     const filteredStocks = useMemo(() => {
         const query = searchQuery.trim().toLowerCase();
         if (query.length === 0) return STOCK_OPTIONS;
         return STOCK_OPTIONS.filter((stock) => stock.name.toLowerCase().includes(query) || stock.code.includes(query));
     }, [searchQuery]);
-    const quickPickStocks = useMemo(
-        () => QUICK_PICK_CODES.map((code) => STOCK_OPTIONS.find((item) => item.code === code)).filter(Boolean),
-        []
-    );
+
+    const chartGridColumns = useMemo(() => {
+        if (isNarrowScreen) return '1fr';
+        return normalizeCodes(applied.codes).length <= 1 ? '1fr' : 'repeat(2, minmax(0, 1fr))';
+    }, [applied.codes, isNarrowScreen]);
+
+    useEffect(() => {
+        const handleResize = () => setIsNarrowScreen(window.innerWidth < 1024);
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, []);
+
+    const loadWatchlist = useCallback(async () => {
+        setWatchlistLoading(true);
+        try {
+            const res = await axios.get(`${API_BASE_URL}/api/watchlist`);
+            const codes = Array.isArray(res.data) ? res.data.map((item) => item?.code).filter(Boolean) : [];
+            const normalized = normalizeCodes(codes);
+            setWatchlistCodes(normalized);
+            if (viewCodes.length === 0) {
+                const initial = normalized.slice(0, MAX_ACTIVE_CHARTS);
+                setViewCodes(initial);
+                setApplied((prev) => ({ ...prev, codes: initial }));
+            }
+            setUiMessage('');
+        } catch (err) {
+            const serverMessage = err?.response?.data?.message;
+            if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
+                setUiMessage(`관심종목 로드 실패: ${serverMessage}`);
+            } else {
+                setUiMessage('관심종목 로드 실패: 백엔드 연결 상태를 확인해 주세요.');
+            }
+        } finally {
+            setWatchlistLoading(false);
+        }
+    }, [viewCodes.length]);
+
+    useEffect(() => {
+        loadWatchlist();
+    }, [loadWatchlist]);
 
     const applyFilter = () => {
+        const now = Date.now();
+        if (now - lastApplyAt < APPLY_DEBOUNCE_MS) return;
+        setLastApplyAt(now);
+
+        const normalizedSelected = normalizeCodes(viewCodes);
+        const limitedCodes = normalizedSelected.slice(0, MAX_ACTIVE_CHARTS);
+        if (normalizedSelected.length > MAX_ACTIVE_CHARTS) {
+            setUiMessage(`동시 조회는 최대 ${MAX_ACTIVE_CHARTS}종목까지 가능합니다. 앞의 ${MAX_ACTIVE_CHARTS}종목만 적용합니다.`);
+        } else {
+            setUiMessage('');
+        }
+
         const safeMonths = Math.max(1, Math.min(Number(monthsInput) || 6, 120));
         setApplied({
-            codes: selectedCodes.length > 0 ? selectedCodes : ['005930'],
+            codes: limitedCodes,
             months: safeMonths,
         });
     };
 
-    const addStock = (code) => {
-        const nextCodes = selectedCodeSet.has(code) ? selectedCodes : [...selectedCodes, code];
-        const normalized = nextCodes.length > 0 ? nextCodes : ['005930'];
-        const safeMonths = Math.max(1, Math.min(Number(monthsInput) || 6, 120));
-        setSelectedCodes(normalized);
-        setApplied({
-            codes: normalized,
-            months: safeMonths,
+    const addToView = (code) => {
+        setViewCodes((prev) => {
+            const normalizedPrev = normalizeCodes(prev);
+            if (!normalizedPrev.includes(code) && normalizedPrev.length >= MAX_ACTIVE_CHARTS) {
+                setUiMessage(`최대 ${MAX_ACTIVE_CHARTS}종목까지 조회할 수 있습니다.`);
+                return normalizedPrev;
+            }
+            const next = normalizeCodes([...normalizedPrev, code]);
+            const safeMonths = Math.max(1, Math.min(Number(monthsInput) || 6, 120));
+            setApplied({ codes: next, months: safeMonths });
+            setUiMessage('');
+            return next;
         });
         setSearchQuery('');
     };
 
-    const removeStock = (code) => {
-        const nextCodes = selectedCodes.filter((c) => c !== code);
-        const normalized = nextCodes.length > 0 ? nextCodes : ['005930'];
-        const safeMonths = Math.max(1, Math.min(Number(monthsInput) || 6, 120));
-        setSelectedCodes(normalized);
-        setApplied({
-            codes: normalized,
-            months: safeMonths,
+    const removeFromView = (code) => {
+        setViewCodes((prev) => {
+            const next = normalizeCodes(prev.filter((c) => c !== code));
+            const safeMonths = Math.max(1, Math.min(Number(monthsInput) || 6, 120));
+            setApplied({ codes: next, months: safeMonths });
+            return next;
         });
+        setUiMessage('');
     };
+
+    const toggleWatchlist = async (code) => {
+        if (watchlistLoading) return;
+        const inWatchlist = watchlistCodeSet.has(code);
+        setWatchlistLoading(true);
+        try {
+            if (inWatchlist) {
+                await axios.delete(`${API_BASE_URL}/api/watchlist/${code}`);
+                setWatchlistCodes((prev) => normalizeCodes(prev.filter((c) => c !== code)));
+            } else {
+                await axios.post(`${API_BASE_URL}/api/watchlist`, {
+                    code,
+                    name: getStockNameByCode(code),
+                });
+                setWatchlistCodes((prev) => normalizeCodes([...prev, code]));
+            }
+            setUiMessage('');
+        } catch (err) {
+            const serverMessage = err?.response?.data?.message;
+            const action = inWatchlist ? '삭제' : '추가';
+            if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
+                setUiMessage(`관심종목 ${action} 실패: ${serverMessage}`);
+            } else {
+                setUiMessage(`관심종목 ${action} 실패: 백엔드 연결 상태를 확인해 주세요.`);
+            }
+        } finally {
+            setWatchlistLoading(false);
+        }
+    };
+
+    const chartCodes = normalizeCodes(applied.codes);
 
     return (
         <div style={{ padding: '20px', fontFamily: 'sans-serif', backgroundColor: '#f9f9f9', minHeight: '100vh' }}>
@@ -228,6 +373,8 @@ function App() {
                     alignItems: 'flex-start',
                 }}
             >
+                {watchlistLoading && <div style={{ color: '#1565c0', fontWeight: 600 }}>관심종목 동기화 중...</div>}
+                {uiMessage && <div style={{ color: '#c62828', fontWeight: 600 }}>{uiMessage}</div>}
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
                     <label style={{ fontWeight: 'bold' }}>종목 검색:</label>
                     <input
@@ -271,6 +418,7 @@ function App() {
                         적용
                     </button>
                 </div>
+
                 <div
                     style={{
                         width: '100%',
@@ -282,27 +430,52 @@ function App() {
                     }}
                 >
                     {filteredStocks.map((stock) => {
-                        const selected = selectedCodeSet.has(stock.code);
+                        const inView = viewCodeSet.has(stock.code);
+                        const inWatchlist = watchlistCodeSet.has(stock.code);
                         return (
-                            <button
+                            <div
                                 key={stock.code}
-                                type="button"
-                                onClick={() => (selected ? removeStock(stock.code) : addStock(stock.code))}
                                 style={{
-                                    width: '100%',
-                                    textAlign: 'left',
-                                    padding: '9px 12px',
-                                    border: 'none',
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    gap: '8px',
+                                    padding: '8px 10px',
                                     borderBottom: '1px solid #f0f0f0',
-                                    backgroundColor: selected ? '#e3f2fd' : '#fff',
-                                    color: selected ? '#0d47a1' : '#333',
-                                    cursor: 'pointer',
-                                    fontWeight: selected ? 700 : 500,
+                                    backgroundColor: inView ? '#e3f2fd' : '#fff',
                                 }}
                             >
-                                {selected ? '✓ ' : '+ '}
-                                {stock.name} ({stock.code})
-                            </button>
+                                <button
+                                    type="button"
+                                    onClick={() => (inView ? removeFromView(stock.code) : addToView(stock.code))}
+                                    style={{
+                                        border: 'none',
+                                        background: 'transparent',
+                                        color: inView ? '#0d47a1' : '#333',
+                                        textAlign: 'left',
+                                        cursor: 'pointer',
+                                        fontWeight: inView ? 700 : 500,
+                                    }}
+                                >
+                                    {inView ? '✓ ' : '+ '}
+                                    {stock.name} ({stock.code})
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => toggleWatchlist(stock.code)}
+                                    disabled={watchlistLoading}
+                                    style={{
+                                        border: '1px solid #d9d9d9',
+                                        borderRadius: '6px',
+                                        backgroundColor: inWatchlist ? '#fff8e1' : '#fff',
+                                        color: inWatchlist ? '#c49000' : '#666',
+                                        cursor: watchlistLoading ? 'not-allowed' : 'pointer',
+                                        padding: '2px 8px',
+                                        fontWeight: 700,
+                                    }}
+                                >
+                                    {inWatchlist ? '★' : '☆'}
+                                </button>
+                            </div>
                         );
                     })}
                 </div>
@@ -321,46 +494,13 @@ function App() {
                     alignItems: 'center',
                 }}
             >
-                <strong style={{ color: '#333' }}>빠른 선택:</strong>
-                {quickPickStocks.map((stock) => (
-                    <button
-                        key={stock.code}
-                        type="button"
-                        onClick={() => addStock(stock.code)}
-                        style={{
-                            padding: '8px 12px',
-                            borderRadius: '999px',
-                            border: selectedCodeSet.has(stock.code) ? '1px solid #1565c0' : '1px solid #d9d9d9',
-                            backgroundColor: selectedCodeSet.has(stock.code) ? '#e3f2fd' : '#fff',
-                            color: selectedCodeSet.has(stock.code) ? '#0d47a1' : '#444',
-                            fontWeight: 600,
-                            cursor: 'pointer',
-                        }}
-                    >
-                        {stock.name}
-                    </button>
-                ))}
-            </div>
-
-            <div
-                style={{
-                    marginBottom: '20px',
-                    padding: '15px',
-                    backgroundColor: '#fff',
-                    borderRadius: '8px',
-                    boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    gap: '8px',
-                    alignItems: 'center',
-                }}
-            >
-                <strong style={{ color: '#333' }}>선택 종목:</strong>
-                {selectedCodes.map((code) => (
+                <strong style={{ color: '#333' }}>조회 종목:</strong>
+                {viewCodes.length === 0 && <span style={{ color: '#666' }}>조회 종목이 없습니다.</span>}
+                {viewCodes.map((code) => (
                     <button
                         key={code}
                         type="button"
-                        onClick={() => removeStock(code)}
+                        onClick={() => removeFromView(code)}
                         style={{
                             padding: '8px 12px',
                             borderRadius: '999px',
@@ -378,12 +518,45 @@ function App() {
 
             <div
                 style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))',
-                    gap: '14px',
+                    marginBottom: '20px',
+                    padding: '15px',
+                    backgroundColor: '#fff',
+                    borderRadius: '8px',
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '8px',
+                    alignItems: 'center',
                 }}
             >
-                {applied.codes.map((code, idx) => (
+                <strong style={{ color: '#333' }}>관심종목:</strong>
+                {watchlistCodes.length === 0 && <span style={{ color: '#666' }}>등록된 관심종목이 없습니다.</span>}
+                {watchlistCodes.map((code) => (
+                    <span
+                        key={code}
+                        style={{
+                            padding: '8px 12px',
+                            borderRadius: '999px',
+                            border: '1px solid #d9d9d9',
+                            backgroundColor: '#fff8e1',
+                            color: '#8a6d00',
+                            fontWeight: 600,
+                        }}
+                    >
+                        {getStockNameByCode(code)} ({code})
+                    </span>
+                ))}
+            </div>
+
+            <div
+                style={{
+                    display: 'grid',
+                    gridTemplateColumns: chartGridColumns,
+                    gap: '14px',
+                    alignItems: 'start',
+                }}
+            >
+                {chartCodes.map((code, idx) => (
                     <StockChartCard
                         key={`${code}-${applied.months}`}
                         code={code}
@@ -392,6 +565,12 @@ function App() {
                     />
                 ))}
             </div>
+
+            {chartCodes.length === 0 && (
+                <div style={{ marginTop: '16px', color: '#666' }}>
+                    조회 종목을 추가하면 차트가 표시됩니다.
+                </div>
+            )}
 
             <footer style={{ marginTop: '20px', fontSize: '13px', color: '#888', textAlign: 'center' }}>
                 Backend: Spring Boot (8080) | Frontend: React (3000)
