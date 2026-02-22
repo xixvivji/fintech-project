@@ -17,8 +17,9 @@ public class StockController {
     @GetMapping("/chart/{code}")
     public List<ChartDataDto> getChart(
             @PathVariable String code,
-            @RequestParam(defaultValue = "6") int months
+            @RequestParam(defaultValue = "6") int months,
+            @RequestParam(required = false) String endDate
     ) {
-        return stockService.getDailyChart(code, months);
+        return stockService.getDailyChart(code, months, endDate);
     }
 }

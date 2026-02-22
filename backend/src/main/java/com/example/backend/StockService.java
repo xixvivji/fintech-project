@@ -16,6 +16,7 @@ public class StockService {
     private static final int MAX_RATE_LIMIT_RETRY = 3;
     private static final int MAX_CHUNK_REQUESTS = 30;
     private static final long CHART_CACHE_TTL_MS = 20_000L;
+    private static final long PRICE_SERIES_CACHE_TTL_MS = 600_000L;
 
     @Value("${kis.app-key}")
     private String appKey;
@@ -35,6 +36,7 @@ public class StockService {
     private final Object tokenLock = new Object();
     private long lastKisRequestAt = 0L;
     private final ConcurrentHashMap<String, CacheEntry> chartCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, PriceSeriesCacheEntry> priceSeriesCache = new ConcurrentHashMap<>();
 
     private void fetchAccessToken() {
         validateConfig();
@@ -70,8 +72,14 @@ public class StockService {
     }
 
     public List<ChartDataDto> getDailyChart(String stockCode, int months) {
+        return getDailyChart(stockCode, months, null);
+    }
+
+    public List<ChartDataDto> getDailyChart(String stockCode, int months, String endDate) {
         int rangeMonths = Math.max(1, Math.min(months, 120));
-        String cacheKey = stockCode + ":" + rangeMonths;
+        LocalDate endLocalDate = parseEndDateOrToday(endDate);
+        String endDateKey = endLocalDate.toString();
+        String cacheKey = stockCode + ":" + rangeMonths + ":" + endDateKey;
         List<ChartDataDto> cached = getCachedChart(cacheKey);
         if (cached != null) return cached;
 
@@ -87,9 +95,9 @@ public class StockService {
 
 
         // 1. 오늘 날짜 (종료일)
-        String today = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
-        // 2. 6개월 전 날짜 (시작일) - 더 길게 보고 싶으면 .minusYears(1) 등으로 수정 가능
-        String startDate = LocalDate.now().minusMonths(rangeMonths).format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+        String today = endLocalDate.format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+        // 2. 종료일 기준 N개월 전 날짜 (시작일)
+        String startDate = endLocalDate.minusMonths(rangeMonths).format(DateTimeFormatter.ofPattern("yyyyMMdd"));
         // ------------------------------
 
         List<ChartDataDto> chartData = new ArrayList<>();
@@ -140,6 +148,30 @@ public class StockService {
         chartData.sort(Comparator.comparing(ChartDataDto::getTime));
         putCachedChart(cacheKey, chartData);
         return chartData;
+    }
+
+    public double getLatestClosePrice(String stockCode) {
+        List<ChartDataDto> chart = getDailyChart(stockCode, 1);
+        if (chart.isEmpty()) {
+            throw new IllegalStateException("현재가 조회 실패: 차트 데이터가 없습니다.");
+        }
+        return chart.get(chart.size() - 1).getClose();
+    }
+
+    public double getClosePriceOnOrBefore(String stockCode, LocalDate targetDate) {
+        if (targetDate == null) {
+            throw new IllegalArgumentException("targetDate는 필수입니다.");
+        }
+        List<ChartDataDto> chart = getCachedPriceSeries(stockCode);
+        String target = targetDate.toString();
+
+        for (int i = chart.size() - 1; i >= 0; i--) {
+            ChartDataDto candle = chart.get(i);
+            if (candle.getTime().compareTo(target) <= 0) {
+                return candle.getClose();
+            }
+        }
+        throw new IllegalStateException("해당 날짜 이전 시세가 없습니다: " + stockCode + " @ " + target);
     }
 
     private void ensureAccessToken() {
@@ -248,6 +280,17 @@ public class StockService {
         }
     }
 
+    private LocalDate parseEndDateOrToday(String endDate) {
+        if (endDate == null || endDate.isBlank()) {
+            return LocalDate.now();
+        }
+        try {
+            return LocalDate.parse(endDate.trim());
+        } catch (Exception e) {
+            throw new IllegalArgumentException("endDate는 yyyy-MM-dd 형식이어야 합니다.");
+        }
+    }
+
     private List<ChartDataDto> getCachedChart(String cacheKey) {
         CacheEntry entry = chartCache.get(cacheKey);
         long now = System.currentTimeMillis();
@@ -264,11 +307,34 @@ public class StockService {
         chartCache.put(cacheKey, new CacheEntry(new ArrayList<>(data), expiresAt));
     }
 
+    private List<ChartDataDto> getCachedPriceSeries(String stockCode) {
+        long now = System.currentTimeMillis();
+        PriceSeriesCacheEntry entry = priceSeriesCache.get(stockCode);
+        if (entry != null && entry.expiresAtMs > now) {
+            return entry.data;
+        }
+
+        List<ChartDataDto> fetched = getDailyChart(stockCode, 120, null);
+        List<ChartDataDto> immutableCopy = List.copyOf(fetched);
+        priceSeriesCache.put(stockCode, new PriceSeriesCacheEntry(immutableCopy, now + PRICE_SERIES_CACHE_TTL_MS));
+        return immutableCopy;
+    }
+
     private static class CacheEntry {
         private final List<ChartDataDto> data;
         private final long expiresAtMs;
 
         private CacheEntry(List<ChartDataDto> data, long expiresAtMs) {
+            this.data = data;
+            this.expiresAtMs = expiresAtMs;
+        }
+    }
+
+    private static class PriceSeriesCacheEntry {
+        private final List<ChartDataDto> data;
+        private final long expiresAtMs;
+
+        private PriceSeriesCacheEntry(List<ChartDataDto> data, long expiresAtMs) {
             this.data = data;
             this.expiresAtMs = expiresAtMs;
         }

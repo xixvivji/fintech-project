@@ -92,7 +92,7 @@ function normalizeCandleData(rawData) {
     return Array.from(byTime.values()).sort((a, b) => a.time.localeCompare(b.time));
 }
 
-function StockChartCard({ code, months, requestDelayMs }) {
+function StockChartCard({ code, months, requestDelayMs, endDate }) {
     const chartContainerRef = useRef(null);
     const chartRef = useRef(null);
     const requestSeqRef = useRef(0);
@@ -133,7 +133,7 @@ function StockChartCard({ code, months, requestDelayMs }) {
         const timer = setTimeout(() => {
             axios
                 .get(`${API_BASE_URL}/api/stock/chart/${code}`, {
-                    params: { months },
+                    params: { months, endDate },
                     signal: controller.signal,
                 })
                 .then((res) => {
@@ -186,7 +186,7 @@ function StockChartCard({ code, months, requestDelayMs }) {
                 chartRef.current = null;
             }
         };
-    }, [code, months, requestDelayMs]);
+    }, [code, months, requestDelayMs, endDate]);
 
     return (
         <div
@@ -220,6 +220,14 @@ function App() {
     const [lastApplyAt, setLastApplyAt] = useState(0);
     const [isNarrowScreen, setIsNarrowScreen] = useState(window.innerWidth < 1024);
     const [watchlistLoading, setWatchlistLoading] = useState(false);
+    const [simLoading, setSimLoading] = useState(false);
+    const [replayLoading, setReplayLoading] = useState(false);
+    const [portfolio, setPortfolio] = useState(null);
+    const [replayState, setReplayState] = useState(null);
+    const [replayStartDate, setReplayStartDate] = useState('');
+    const [tradeCode, setTradeCode] = useState('');
+    const [tradeQty, setTradeQty] = useState(1);
+    const [tradeMessage, setTradeMessage] = useState('');
     const [applied, setApplied] = useState({
         codes: [],
         months: 24,
@@ -238,6 +246,8 @@ function App() {
         if (isNarrowScreen) return '1fr';
         return normalizeCodes(applied.codes).length <= 1 ? '1fr' : 'repeat(2, minmax(0, 1fr))';
     }, [applied.codes, isNarrowScreen]);
+    const chartCodes = useMemo(() => normalizeCodes(applied.codes), [applied.codes]);
+    const chartEndDate = useMemo(() => portfolio?.valuationDate || replayState?.currentDate || null, [portfolio, replayState]);
 
     useEffect(() => {
         const handleResize = () => setIsNarrowScreen(window.innerWidth < 1024);
@@ -273,6 +283,73 @@ function App() {
     useEffect(() => {
         loadWatchlist();
     }, [loadWatchlist]);
+
+    const loadPortfolio = useCallback(async () => {
+        setSimLoading(true);
+        try {
+            const res = await axios.get(`${API_BASE_URL}/api/sim/portfolio`);
+            setPortfolio(res.data);
+            setTradeMessage('');
+        } catch (err) {
+            const serverMessage = err?.response?.data?.message;
+            if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
+                setTradeMessage(`포트폴리오 조회 실패: ${serverMessage}`);
+            } else {
+                setTradeMessage('포트폴리오 조회 실패');
+            }
+        } finally {
+            setSimLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        loadPortfolio();
+    }, [loadPortfolio]);
+
+    useEffect(() => {
+        if (!replayStartDate) {
+            const d = new Date();
+            d.setMonth(d.getMonth() - 1);
+            setReplayStartDate(d.toISOString().slice(0, 10));
+        }
+    }, [replayStartDate]);
+
+    const loadReplayState = useCallback(async () => {
+        try {
+            const res = await axios.get(`${API_BASE_URL}/api/sim/replay/state`);
+            setReplayState(res.data);
+            if (res.data?.portfolio) {
+                setPortfolio(res.data.portfolio);
+            }
+        } catch (err) {
+            const serverMessage = err?.response?.data?.message;
+            if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
+                setTradeMessage(`리플레이 상태 조회 실패: ${serverMessage}`);
+            }
+        }
+    }, []);
+
+    useEffect(() => {
+        loadReplayState();
+    }, [loadReplayState]);
+
+    useEffect(() => {
+        if (!replayState?.running) return;
+        const timer = setInterval(() => {
+            loadReplayState();
+        }, 5000);
+        return () => clearInterval(timer);
+    }, [replayState?.running, loadReplayState]);
+
+    useEffect(() => {
+        if (chartCodes.length === 0) {
+            setTradeCode('');
+            return;
+        }
+        if (!tradeCode || !chartCodes.includes(tradeCode)) {
+            setTradeCode(chartCodes[0]);
+        }
+    }, [chartCodes, tradeCode]);
 
     const applyFilter = () => {
         const now = Date.now();
@@ -349,7 +426,96 @@ function App() {
         }
     };
 
-    const chartCodes = normalizeCodes(applied.codes);
+    const submitOrder = async (side) => {
+        if (!tradeCode) {
+            setTradeMessage('주문할 종목을 먼저 선택해 주세요.');
+            return;
+        }
+        const qty = Number(tradeQty);
+        if (!Number.isInteger(qty) || qty <= 0) {
+            setTradeMessage('수량은 1 이상의 정수여야 합니다.');
+            return;
+        }
+
+        setSimLoading(true);
+        try {
+            const res = await axios.post(`${API_BASE_URL}/api/sim/order`, {
+                code: tradeCode,
+                side,
+                quantity: qty,
+            });
+            setTradeMessage(`${side === 'BUY' ? '매수' : '매도'} 체결: ${res.data.code} ${res.data.quantity}주 @ ${res.data.price}`);
+            await loadPortfolio();
+        } catch (err) {
+            const serverMessage = err?.response?.data?.message;
+            if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
+                setTradeMessage(serverMessage);
+            } else {
+                setTradeMessage('주문 실패');
+            }
+            setSimLoading(false);
+        }
+    };
+
+    const resetSimulation = async () => {
+        setSimLoading(true);
+        try {
+            await axios.post(`${API_BASE_URL}/api/sim/reset`);
+            setTradeMessage('모의투자 계좌를 초기화했습니다.');
+            await loadReplayState();
+        } catch (err) {
+            const serverMessage = err?.response?.data?.message;
+            if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
+                setTradeMessage(serverMessage);
+            } else {
+                setTradeMessage('초기화 실패');
+            }
+            setSimLoading(false);
+        }
+    };
+
+    const startReplay = async () => {
+        setReplayLoading(true);
+        try {
+            await axios.post(`${API_BASE_URL}/api/sim/replay/start`, {
+                startDate: replayStartDate,
+            });
+            await loadReplayState();
+            setTradeMessage('리플레이를 시작했습니다. 1분마다 1일씩 진행됩니다.');
+        } catch (err) {
+            const serverMessage = err?.response?.data?.message;
+            if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
+                setTradeMessage(serverMessage);
+            } else {
+                setTradeMessage('리플레이 시작 실패');
+            }
+        } finally {
+            setReplayLoading(false);
+        }
+    };
+
+    const pauseReplay = async () => {
+        setReplayLoading(true);
+        try {
+            await axios.post(`${API_BASE_URL}/api/sim/replay/pause`);
+            await loadReplayState();
+            setTradeMessage('리플레이를 일시정지했습니다.');
+        } catch (err) {
+            const serverMessage = err?.response?.data?.message;
+            if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
+                setTradeMessage(serverMessage);
+            } else {
+                setTradeMessage('리플레이 일시정지 실패');
+            }
+        } finally {
+            setReplayLoading(false);
+        }
+    };
+
+    const fmt = (value) => {
+        if (typeof value !== 'number') return '-';
+        return value.toLocaleString('ko-KR');
+    };
 
     return (
         <div style={{ padding: '20px', fontFamily: 'sans-serif', backgroundColor: '#f9f9f9', minHeight: '100vh' }}>
@@ -562,6 +728,7 @@ function App() {
                         code={code}
                         months={applied.months}
                         requestDelayMs={idx * 500}
+                        endDate={chartEndDate}
                     />
                 ))}
             </div>
@@ -571,6 +738,110 @@ function App() {
                     조회 종목을 추가하면 차트가 표시됩니다.
                 </div>
             )}
+
+            <div
+                style={{
+                    marginTop: '20px',
+                    marginBottom: '20px',
+                    padding: '15px',
+                    backgroundColor: '#fff',
+                    borderRadius: '8px',
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px',
+                }}
+            >
+                <h3 style={{ margin: 0 }}>모의투자</h3>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+                    <label>리플레이 시작일:</label>
+                    <input
+                        type="date"
+                        value={replayStartDate}
+                        onChange={(e) => setReplayStartDate(e.target.value)}
+                        disabled={replayLoading}
+                        style={{ padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
+                    />
+                    <button
+                        type="button"
+                        onClick={startReplay}
+                        disabled={replayLoading || simLoading}
+                        style={{ padding: '8px 12px', border: 'none', borderRadius: '6px', backgroundColor: '#3949ab', color: '#fff' }}
+                    >
+                        리플레이 시작
+                    </button>
+                    <button
+                        type="button"
+                        onClick={pauseReplay}
+                        disabled={replayLoading || simLoading}
+                        style={{ padding: '8px 12px', border: '1px solid #ccc', borderRadius: '6px', backgroundColor: '#fff' }}
+                    >
+                        일시정지
+                    </button>
+                    <span style={{ color: '#555' }}>
+                        상태: {replayState?.running ? '진행중' : '정지'} / 기준일: {portfolio?.valuationDate || replayState?.currentDate || '-'}
+                    </span>
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+                    <label>종목:</label>
+                    <select
+                        value={tradeCode}
+                        onChange={(e) => setTradeCode(e.target.value)}
+                        disabled={simLoading || chartCodes.length === 0}
+                        style={{ padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
+                    >
+                        {chartCodes.map((code) => (
+                            <option key={code} value={code}>
+                                {getStockNameByCode(code)} ({code})
+                            </option>
+                        ))}
+                    </select>
+                    <label>수량:</label>
+                    <input
+                        type="number"
+                        min="1"
+                        value={tradeQty}
+                        onChange={(e) => setTradeQty(e.target.value)}
+                        disabled={simLoading}
+                        style={{ width: '100px', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
+                    />
+                    <button
+                        type="button"
+                        onClick={() => submitOrder('BUY')}
+                        disabled={simLoading || !tradeCode}
+                        style={{ padding: '8px 12px', border: 'none', borderRadius: '6px', backgroundColor: '#e53935', color: '#fff' }}
+                    >
+                        매수
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => submitOrder('SELL')}
+                        disabled={simLoading || !tradeCode}
+                        style={{ padding: '8px 12px', border: 'none', borderRadius: '6px', backgroundColor: '#00897b', color: '#fff' }}
+                    >
+                        매도
+                    </button>
+                    <button
+                        type="button"
+                        onClick={resetSimulation}
+                        disabled={simLoading}
+                        style={{ padding: '8px 12px', border: '1px solid #ccc', borderRadius: '6px', backgroundColor: '#fff' }}
+                    >
+                        초기화
+                    </button>
+                </div>
+                {tradeMessage && <div style={{ color: '#555' }}>{tradeMessage}</div>}
+                {portfolio && (
+                    <div style={{ fontSize: '14px', color: '#333' }}>
+                        현금: {fmt(portfolio.cash)}원 | 평가금액: {fmt(portfolio.marketValue)}원 | 총자산: {fmt(portfolio.totalValue)}원 | 실현손익: {fmt(portfolio.realizedPnl)}원 | 미실현손익: {fmt(portfolio.unrealizedPnl)}원
+                    </div>
+                )}
+                {portfolio?.holdings?.length > 0 && (
+                    <div style={{ fontSize: '13px', color: '#444' }}>
+                        보유: {portfolio.holdings.map((h) => `${h.code} ${h.quantity}주(평단 ${fmt(h.avgPrice)})`).join(' / ')}
+                    </div>
+                )}
+            </div>
 
             <footer style={{ marginTop: '20px', fontSize: '13px', color: '#888', textAlign: 'center' }}>
                 Backend: Spring Boot (8080) | Frontend: React (3000)
