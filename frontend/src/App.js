@@ -445,7 +445,15 @@ function App() {
                 quantity: qty,
             });
             setTradeMessage(`${side === 'BUY' ? '매수' : '매도'} 체결: ${res.data.code} ${res.data.quantity}주 @ ${res.data.price}`);
-            await loadPortfolio();
+            setPortfolio((prev) => {
+                if (!prev) return prev;
+                return {
+                    ...prev,
+                    cash: res.data.cashAfter,
+                };
+            });
+            setSimLoading(false);
+            loadReplayState();
         } catch (err) {
             const serverMessage = err?.response?.data?.message;
             if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
@@ -462,7 +470,20 @@ function App() {
         try {
             await axios.post(`${API_BASE_URL}/api/sim/reset`);
             setTradeMessage('모의투자 계좌를 초기화했습니다.');
-            await loadReplayState();
+            setPortfolio((prev) => {
+                if (!prev) return prev;
+                return {
+                    ...prev,
+                    cash: 10000000,
+                    marketValue: 0,
+                    totalValue: 10000000,
+                    realizedPnl: 0,
+                    unrealizedPnl: 0,
+                    holdings: [],
+                };
+            });
+            setSimLoading(false);
+            loadReplayState();
         } catch (err) {
             const serverMessage = err?.response?.data?.message;
             if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
