@@ -28,10 +28,12 @@ public class StockService {
     private String trId;
 
     private String accessToken = "";
+    private long tokenExpiresAtMs = 0L;
     private final Object kisRequestLock = new Object();
+    private final Object tokenLock = new Object();
     private long lastKisRequestAt = 0L;
 
-    public void fetchAccessToken() {
+    private void fetchAccessToken() {
         validateConfig();
 
         RestTemplate restTemplate = new RestTemplate();
@@ -53,6 +55,9 @@ public class StockService {
                 throw new IllegalStateException("KIS token response is empty.");
             }
             this.accessToken = tokenResponse.getAccess_token();
+            int expiresIn = tokenResponse.getExpires_in();
+            long ttlMs = Math.max(30_000L, (long) expiresIn * 1000L);
+            this.tokenExpiresAtMs = System.currentTimeMillis() + ttlMs;
             System.out.println(">>> [성공] 토큰 발급 완료");
         } catch (RestClientResponseException e) {
             throw new IllegalStateException("KIS 토큰 발급 실패: HTTP " + e.getStatusCode() + " - " + e.getResponseBodyAsString(), e);
@@ -62,7 +67,7 @@ public class StockService {
     }
 
     public List<ChartDataDto> getDailyChart(String stockCode, int months) {
-        if (this.accessToken.isEmpty()) fetchAccessToken();
+        ensureAccessToken();
         int rangeMonths = Math.max(1, Math.min(months, 120));
 
         RestTemplate restTemplate = new RestTemplate();
@@ -97,13 +102,19 @@ public class StockService {
                 if (rawDate.compareTo(startDate) < 0 || rawDate.compareTo(cursorEndDate) > 0) continue;
 
                 String formattedDate = rawDate.substring(0, 4) + "-" + rawDate.substring(4, 6) + "-" + rawDate.substring(6, 8);
+                Double open = parseDoubleOrNull(d.get("stck_oprc"));
+                Double high = parseDoubleOrNull(d.get("stck_hgpr"));
+                Double low = parseDoubleOrNull(d.get("stck_lwpr"));
+                Double close = parseDoubleOrNull(d.get("stck_clpr"));
+                if (open == null || high == null || low == null || close == null) continue;
+
                 if (seenDates.add(formattedDate)) {
                     chartData.add(new ChartDataDto(
                             formattedDate,
-                            Double.parseDouble(d.get("stck_oprc")),
-                            Double.parseDouble(d.get("stck_hgpr")),
-                            Double.parseDouble(d.get("stck_lwpr")),
-                            Double.parseDouble(d.get("stck_clpr"))
+                            open,
+                            high,
+                            low,
+                            close
                     ));
                 }
 
@@ -119,7 +130,19 @@ public class StockService {
             cursorEndDate = nextCursor;
         }
 
+        chartData.sort(Comparator.comparing(ChartDataDto::getTime));
         return chartData;
+    }
+
+    private void ensureAccessToken() {
+        long now = System.currentTimeMillis();
+        if (!accessToken.isBlank() && now + 10_000L < tokenExpiresAtMs) return;
+
+        synchronized (tokenLock) {
+            long recheckNow = System.currentTimeMillis();
+            if (!accessToken.isBlank() && recheckNow + 10_000L < tokenExpiresAtMs) return;
+            fetchAccessToken();
+        }
     }
 
     private void validateConfig() {
@@ -205,6 +228,15 @@ public class StockService {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("요청 대기 중 인터럽트 발생", e);
+        }
+    }
+
+    private Double parseDoubleOrNull(String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            return Double.parseDouble(value);
+        } catch (NumberFormatException e) {
+            return null;
         }
     }
 }

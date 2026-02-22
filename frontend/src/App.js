@@ -70,6 +70,11 @@ function StockChartCard({ code, months, requestDelayMs }) {
                         setError(serverMessage);
                         return;
                     }
+                    const runtimeMessage = err?.message;
+                    if (typeof runtimeMessage === 'string' && runtimeMessage.trim().length > 0) {
+                        setError(`조회 실패: ${runtimeMessage}`);
+                        return;
+                    }
                     setError('조회 실패: 백엔드 실행 상태와 종목 코드를 확인해 주세요.');
                 })
                 .finally(() => {
