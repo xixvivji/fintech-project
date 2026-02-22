@@ -7,7 +7,6 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/stock")
-@CrossOrigin(origins = "http://localhost:3000") // CORS 에러 방지
 public class StockController {
     private final StockService stockService;
 
@@ -16,7 +15,10 @@ public class StockController {
     }
 
     @GetMapping("/chart/{code}")
-    public List<ChartDataDto> getChart(@PathVariable String code) {
-        return stockService.getDailyChart(code);
+    public List<ChartDataDto> getChart(
+            @PathVariable String code,
+            @RequestParam(defaultValue = "6") int months
+    ) {
+        return stockService.getDailyChart(code, months);
     }
 }

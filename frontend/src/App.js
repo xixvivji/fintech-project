@@ -1,24 +1,37 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart } from 'lightweight-charts';
 import axios from 'axios';
 
-function App() {
-    const chartContainerRef = useRef(null); // 초기값을 null로 설정
-    const chartRef = useRef(null); // 생성된 차트 객체를 저장할 ref 추가
-    const [stockCode, setStockCode] = useState('005930');
+const PERIOD_OPTIONS = [
+    { label: '6개월', value: 6 },
+    { label: '1년', value: 12 },
+    { label: '2년', value: 24 },
+    { label: '3년', value: 36 },
+    { label: '5년', value: 60 },
+];
+
+function parseStockCodes(input) {
+    return Array.from(new Set(
+        input
+            .split(',')
+            .map((code) => code.trim())
+            .filter((code) => code.length > 0)
+    ));
+}
+
+function StockChartCard({ code, months, requestDelayMs }) {
+    const chartContainerRef = useRef(null);
+    const chartRef = useRef(null);
     const [loading, setLoading] = useState(false);
+    const [error, setError] = useState('');
 
     useEffect(() => {
-        // 1. 차트 컨테이너가 없으면 실행 안 함
         if (!chartContainerRef.current) return;
 
-        // 2. 초기화: 기존 차트 및 HTML 내용 완전히 제거
         chartContainerRef.current.innerHTML = '';
-
-        // 3. 차트 객체 생성
         const chart = createChart(chartContainerRef.current, {
             width: chartContainerRef.current.clientWidth,
-            height: 500,
+            height: 360,
             layout: {
                 background: { color: '#ffffff' },
                 textColor: '#333',
@@ -29,8 +42,6 @@ function App() {
             },
         });
 
-        // 4. 시리즈 추가 (이 부분이 에러가 났던 지점)
-        // chart 객체가 존재하는지 확인 후 안전하게 호출
         const candlestickSeries = chart.addCandlestickSeries({
             upColor: '#ef5350',
             downColor: '#26a69a',
@@ -38,88 +49,176 @@ function App() {
             wickDownColor: '#26a69a',
         });
 
-        // 전역 ref에 저장 (리사이징 등에서 쓰기 위함)
         chartRef.current = chart;
-
-        // 5. 백엔드 데이터 호출
         setLoading(true);
-        axios.get(`http://localhost:8080/api/stock/chart/${stockCode}`)
-            .then(res => {
-                if (res.data && Array.isArray(res.data) && res.data.length > 0) {
-                    // 데이터가 'time' 기준으로 오름차순인지 백엔드 확인 필요 (차트는 과거->미래 순이어야 함)
+        setError('');
+
+        const timer = setTimeout(() => {
+            axios
+                .get(`http://localhost:8080/api/stock/chart/${code}`, { params: { months } })
+                .then((res) => {
+                    if (!Array.isArray(res.data) || res.data.length === 0) {
+                        setError('데이터가 없습니다. 종목 코드를 확인해 주세요.');
+                        return;
+                    }
                     candlestickSeries.setData(res.data);
                     chart.timeScale().fitContent();
-                }
-                setLoading(false);
-            })
-            .catch(err => {
-                console.error("백엔드 연결 실패:", err);
-                setLoading(false);
-            });
+                })
+                .catch((err) => {
+                    const serverMessage = err?.response?.data?.message;
+                    if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
+                        setError(serverMessage);
+                        return;
+                    }
+                    setError('조회 실패: 백엔드 실행 상태와 종목 코드를 확인해 주세요.');
+                })
+                .finally(() => {
+                    setLoading(false);
+                });
+        }, requestDelayMs);
 
-        // 6. 리사이징 처리
         const handleResize = () => {
             if (chartRef.current && chartContainerRef.current) {
                 chartRef.current.applyOptions({
-                    width: chartContainerRef.current.clientWidth
+                    width: chartContainerRef.current.clientWidth,
                 });
             }
         };
+
         window.addEventListener('resize', handleResize);
 
-        // 7. 클린업 (중요!)
         return () => {
+            clearTimeout(timer);
             window.removeEventListener('resize', handleResize);
             if (chartRef.current) {
                 chartRef.current.remove();
                 chartRef.current = null;
             }
         };
-    }, [stockCode]); // stockCode가 바뀔 때마다 차트 재구성
+    }, [code, months, requestDelayMs]);
+
+    return (
+        <div
+            style={{
+                padding: '12px',
+                backgroundColor: '#fff',
+                borderRadius: '10px',
+                border: '1px solid #e8e8e8',
+                boxShadow: '0 2px 10px rgba(0,0,0,0.04)',
+            }}
+        >
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <strong>{code}</strong>
+                <span style={{ color: '#666', fontSize: '13px' }}>{months}개월</span>
+            </div>
+            {loading && <div style={{ marginBottom: '8px', color: '#ef5350' }}>데이터 동기화 중...</div>}
+            {error && <div style={{ marginBottom: '8px', color: '#d32f2f' }}>{error}</div>}
+            <div ref={chartContainerRef} style={{ minHeight: '360px' }} />
+        </div>
+    );
+}
+
+function App() {
+    const [stockInput, setStockInput] = useState('005930, 000660, 035420');
+    const [monthsInput, setMonthsInput] = useState(24);
+    const [applied, setApplied] = useState({
+        codes: ['005930', '000660', '035420'],
+        months: 24,
+    });
+
+    const parsedCodes = useMemo(() => parseStockCodes(stockInput), [stockInput]);
+
+    const applyFilter = () => {
+        const safeMonths = Math.max(1, Math.min(Number(monthsInput) || 6, 120));
+        setApplied({
+            codes: parsedCodes.length > 0 ? parsedCodes : ['005930'],
+            months: safeMonths,
+        });
+    };
 
     return (
         <div style={{ padding: '20px', fontFamily: 'sans-serif', backgroundColor: '#f9f9f9', minHeight: '100vh' }}>
             <header style={{ marginBottom: '20px' }}>
-                <h1 style={{ color: '#333', margin: '0' }}>📈 Gen-Z 투자 플랫폼 <small style={{fontSize: '0.5em', color: '#999'}}>Local Test</small></h1>
+                <h1 style={{ color: '#333', margin: 0 }}>Gen-Z 투자 플랫폼</h1>
+                <div style={{ marginTop: '6px', color: '#777', fontSize: '14px' }}>
+                    여러 종목 + 장기 기간 캔들 차트
+                </div>
             </header>
 
-            <div style={{
-                marginBottom: '20px',
-                padding: '15px',
-                backgroundColor: '#fff',
-                borderRadius: '8px',
-                boxShadow: '0 2px 4px rgba(0,0,0,0.05)'
-            }}>
-                <label style={{ marginRight: '10px', fontWeight: 'bold' }}>종목 코드:</label>
+            <div
+                style={{
+                    marginBottom: '20px',
+                    padding: '15px',
+                    backgroundColor: '#fff',
+                    borderRadius: '8px',
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '10px',
+                    alignItems: 'center',
+                }}
+            >
+                <label style={{ fontWeight: 'bold' }}>종목 코드(쉼표 구분):</label>
                 <input
                     type="text"
-                    value={stockCode}
-                    onChange={(e) => setStockCode(e.target.value)}
-                    placeholder="예: 005930"
+                    value={stockInput}
+                    onChange={(e) => setStockInput(e.target.value)}
+                    placeholder="예: 005930,000660,035420"
                     style={{
                         padding: '10px',
                         borderRadius: '4px',
                         border: '1px solid #ddd',
-                        width: '150px',
-                        fontSize: '16px'
+                        minWidth: '320px',
+                        fontSize: '15px',
                     }}
                 />
-                {loading && <span style={{ marginLeft: '15px', color: '#ef5350', fontWeight: 'bold' }}>데이터 동기화 중...</span>}
+                <label style={{ fontWeight: 'bold' }}>기간:</label>
+                <select
+                    value={monthsInput}
+                    onChange={(e) => setMonthsInput(Number(e.target.value))}
+                    style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ddd' }}
+                >
+                    {PERIOD_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                            {option.label}
+                        </option>
+                    ))}
+                </select>
+                <button
+                    type="button"
+                    onClick={applyFilter}
+                    style={{
+                        padding: '10px 14px',
+                        borderRadius: '6px',
+                        border: 'none',
+                        backgroundColor: '#1e88e5',
+                        color: '#fff',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                    }}
+                >
+                    적용
+                </button>
             </div>
 
             <div
-                ref={chartContainerRef}
                 style={{
-                    border: '1px solid #ddd',
-                    borderRadius: '8px',
-                    overflow: 'hidden',
-                    backgroundColor: '#fff',
-                    boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))',
+                    gap: '14px',
                 }}
-            />
+            >
+                {applied.codes.map((code, idx) => (
+                    <StockChartCard
+                        key={`${code}-${applied.months}`}
+                        code={code}
+                        months={applied.months}
+                        requestDelayMs={idx * 500}
+                    />
+                ))}
+            </div>
 
             <footer style={{ marginTop: '20px', fontSize: '13px', color: '#888', textAlign: 'center' }}>
-                본 환경은 <strong>SSAFY 프로젝트</strong> 개발용 로컬 서버입니다. <br/>
                 Backend: Spring Boot (8080) | Frontend: React (3000)
             </footer>
         </div>
