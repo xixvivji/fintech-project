@@ -2,13 +2,25 @@ package com.example.backend.watchlist;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 
 @Entity
-@Table(name = "watchlist")
+@Table(
+        name = "watchlist_item",
+        uniqueConstraints = @UniqueConstraint(name = "uk_watchlist_user_code", columnNames = {"user_id", "code"})
+)
 public class WatchlistEntity {
     @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(name = "user_id", nullable = false)
+    private Long userId;
+
     @Column(length = 6, nullable = false)
     private String code;
 
@@ -17,6 +29,18 @@ public class WatchlistEntity {
 
     @Column(nullable = false)
     private long addedAt;
+
+    public Long getId() {
+        return id;
+    }
+
+    public Long getUserId() {
+        return userId;
+    }
+
+    public void setUserId(Long userId) {
+        this.userId = userId;
+    }
 
     public String getCode() {
         return code;

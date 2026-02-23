@@ -11,6 +11,7 @@ const PERIOD_OPTIONS = [
     { label: '5년', value: 60 },
 ];
 const API_BASE_URL = 'http://localhost:8080';
+const AUTH_TOKEN_KEY = 'fintech_access_token';
 
 const STOCK_OPTIONS = [
     { name: '삼성전자', code: '005930' },
@@ -70,6 +71,14 @@ function mapServerErrorMessage(message) {
 
 function normalizeCodes(codes) {
     return Array.from(new Set(codes.filter(Boolean)));
+}
+
+function readStoredToken() {
+    try {
+        return localStorage.getItem(AUTH_TOKEN_KEY) || '';
+    } catch (e) {
+        return '';
+    }
 }
 
 function normalizeCandleData(rawData) {
@@ -213,6 +222,15 @@ function StockChartCard({ code, months, requestDelayMs, endDate }) {
 }
 
 function App() {
+    const [authToken, setAuthToken] = useState(readStoredToken);
+    const [authPage, setAuthPage] = useState('login');
+    const [loginName, setLoginName] = useState('');
+    const [loginPassword, setLoginPassword] = useState('');
+    const [signupName, setSignupName] = useState('');
+    const [signupPassword, setSignupPassword] = useState('');
+    const [authLoading, setAuthLoading] = useState(false);
+    const [authMessage, setAuthMessage] = useState('');
+    const [currentUser, setCurrentUser] = useState(null);
     const [viewCodes, setViewCodes] = useState([]);
     const [watchlistCodes, setWatchlistCodes] = useState([]);
     const [monthsInput, setMonthsInput] = useState(24);
@@ -250,6 +268,7 @@ function App() {
     }, [applied.codes, isNarrowScreen]);
     const chartCodes = useMemo(() => normalizeCodes(applied.codes), [applied.codes]);
     const chartEndDate = useMemo(() => portfolio?.valuationDate || replayState?.currentDate || null, [portfolio, replayState]);
+    const isLoggedIn = authToken.trim().length > 0;
 
     useEffect(() => {
         const handleResize = () => setIsNarrowScreen(window.innerWidth < 1024);
@@ -257,7 +276,134 @@ function App() {
         return () => window.removeEventListener('resize', handleResize);
     }, []);
 
+    useEffect(() => {
+        if (isLoggedIn) {
+            axios.defaults.headers.common.Authorization = `Bearer ${authToken}`;
+        } else {
+            delete axios.defaults.headers.common.Authorization;
+        }
+    }, [authToken, isLoggedIn]);
+
+    const clearSessionState = useCallback(() => {
+        setCurrentUser(null);
+        setWatchlistCodes([]);
+        setPortfolio(null);
+        setReplayState(null);
+        setTradeMessage('');
+    }, []);
+
+    const fetchMe = useCallback(async () => {
+        if (!isLoggedIn) return;
+        try {
+            const res = await axios.get(`${API_BASE_URL}/api/auth/me`);
+            setCurrentUser(res.data || null);
+            setAuthMessage('');
+        } catch (err) {
+            const serverMessage = err?.response?.data?.message;
+            setCurrentUser(null);
+            setAuthToken('');
+            setAuthPage('login');
+            try {
+                localStorage.removeItem(AUTH_TOKEN_KEY);
+            } catch (e) {
+                // ignore
+            }
+            clearSessionState();
+            if (typeof serverMessage === 'string' && serverMessage.trim()) {
+                setAuthMessage(`로그인 세션 만료: ${serverMessage}`);
+            } else {
+                setAuthMessage('로그인 세션이 만료되었습니다. 다시 로그인해 주세요.');
+            }
+        }
+    }, [clearSessionState, isLoggedIn]);
+
+    useEffect(() => {
+        if (!isLoggedIn) {
+            clearSessionState();
+            return;
+        }
+        fetchMe();
+    }, [isLoggedIn, fetchMe, clearSessionState]);
+
+    const handleSignup = async () => {
+        const name = signupName.trim();
+        const password = signupPassword;
+        if (!name || !password) {
+            setAuthMessage('이름/비밀번호를 입력해 주세요.');
+            return;
+        }
+        setAuthLoading(true);
+        try {
+            await axios.post(`${API_BASE_URL}/api/auth/signup`, { name, password });
+            setAuthMessage('회원가입 완료. 로그인 페이지로 이동합니다.');
+            setAuthPage('login');
+            setLoginName(name);
+            setSignupPassword('');
+        } catch (err) {
+            const serverMessage = err?.response?.data?.message;
+            if (typeof serverMessage === 'string' && serverMessage.trim()) {
+                setAuthMessage(`회원가입 실패: ${serverMessage}`);
+            } else {
+                setAuthMessage('회원가입 실패');
+            }
+        } finally {
+            setAuthLoading(false);
+        }
+    };
+
+    const handleLogin = async () => {
+        const name = loginName.trim();
+        const password = loginPassword;
+        if (!name || !password) {
+            setAuthMessage('이름/비밀번호를 입력해 주세요.');
+            return;
+        }
+        setAuthLoading(true);
+        try {
+            const res = await axios.post(`${API_BASE_URL}/api/auth/login`, { name, password });
+            const token = res?.data?.accessToken;
+            if (typeof token !== 'string' || !token.trim()) {
+                setAuthMessage('로그인 실패: 토큰이 없습니다.');
+                return;
+            }
+            setAuthToken(token.trim());
+            try {
+                localStorage.setItem(AUTH_TOKEN_KEY, token.trim());
+            } catch (e) {
+                // ignore
+            }
+            setCurrentUser({ id: res?.data?.userId, name: res?.data?.name || name });
+            setAuthMessage('');
+            setLoginPassword('');
+        } catch (err) {
+            const serverMessage = err?.response?.data?.message;
+            if (typeof serverMessage === 'string' && serverMessage.trim()) {
+                setAuthMessage(`로그인 실패: ${serverMessage}`);
+            } else {
+                setAuthMessage('로그인 실패');
+            }
+        } finally {
+            setAuthLoading(false);
+        }
+    };
+
+    const handleLogout = () => {
+        setAuthToken('');
+        setAuthPage('login');
+        try {
+            localStorage.removeItem(AUTH_TOKEN_KEY);
+        } catch (e) {
+            // ignore
+        }
+        clearSessionState();
+        setAuthMessage('로그아웃되었습니다.');
+    };
+
     const loadWatchlist = useCallback(async () => {
+        if (!isLoggedIn) {
+            setWatchlistCodes([]);
+            return;
+        }
         setWatchlistLoading(true);
         try {
             const res = await axios.get(`${API_BASE_URL}/api/watchlist`);
@@ -280,13 +426,17 @@ function App() {
         } finally {
             setWatchlistLoading(false);
         }
-    }, [viewCodes.length]);
+    }, [isLoggedIn, viewCodes.length]);
 
     useEffect(() => {
         loadWatchlist();
     }, [loadWatchlist]);
 
     const loadPortfolio = useCallback(async () => {
+        if (!isLoggedIn) {
+            setPortfolio(null);
+            return;
+        }
         setSimLoading(true);
         try {
             const res = await axios.get(`${API_BASE_URL}/api/sim/portfolio`);
@@ -302,7 +452,7 @@ function App() {
         } finally {
             setSimLoading(false);
         }
-    }, []);
+    }, [isLoggedIn]);
 
     useEffect(() => {
         loadPortfolio();
@@ -317,6 +467,10 @@ function App() {
     }, [replayStartDate]);
 
     const loadReplayState = useCallback(async () => {
+        if (!isLoggedIn) {
+            setReplayState(null);
+            return;
+        }
         try {
             const res = await axios.get(`${API_BASE_URL}/api/sim/replay/state`);
             setReplayState(res.data);
@@ -329,7 +483,7 @@ function App() {
                 setTradeMessage(`리플레이 상태 조회 실패: ${serverMessage}`);
             }
         }
-    }, []);
+    }, [isLoggedIn]);
 
     useEffect(() => {
         loadReplayState();
@@ -420,6 +574,10 @@ function App() {
     };
 
     const toggleWatchlist = async (code) => {
+        if (!isLoggedIn) {
+            setUiMessage('로그인 후 관심종목을 사용할 수 있습니다.');
+            return;
+        }
         if (watchlistLoading) return;
         const inWatchlist = watchlistCodeSet.has(code);
         setWatchlistLoading(true);
@@ -449,6 +607,10 @@ function App() {
     };
 
     const submitOrder = async (side, overrides = {}) => {
+        if (!isLoggedIn) {
+            setTradeMessage('로그인 후 주문할 수 있습니다.');
+            return;
+        }
         const targetCode = overrides.code ?? tradeCode;
         const targetQtyInput = overrides.quantity ?? tradeQty;
 
@@ -491,6 +653,10 @@ function App() {
     };
 
     const resetSimulation = async () => {
+        if (!isLoggedIn) {
+            setTradeMessage('로그인 후 사용할 수 있습니다.');
+            return;
+        }
         setSimLoading(true);
         try {
             await axios.post(`${API_BASE_URL}/api/sim/reset`);
@@ -521,6 +687,10 @@ function App() {
     };
 
     const startReplay = async () => {
+        if (!isLoggedIn) {
+            setTradeMessage('로그인 후 사용할 수 있습니다.');
+            return;
+        }
         setReplayLoading(true);
         try {
             await axios.post(`${API_BASE_URL}/api/sim/replay/start`, {
@@ -541,6 +711,10 @@ function App() {
     };
 
     const pauseReplay = async () => {
+        if (!isLoggedIn) {
+            setTradeMessage('로그인 후 사용할 수 있습니다.');
+            return;
+        }
         setReplayLoading(true);
         try {
             await axios.post(`${API_BASE_URL}/api/sim/replay/pause`);
@@ -568,6 +742,139 @@ function App() {
         return Number.isInteger(value) && value > 0 ? value : 1;
     };
 
+    if (!isLoggedIn) {
+        return (
+            <div style={{ padding: '20px', fontFamily: 'sans-serif', backgroundColor: '#f9f9f9', minHeight: '100vh' }}>
+                <header style={{ marginBottom: '20px' }}>
+                    <h1 style={{ color: '#333', margin: 0 }}>Gen-Z 투자 플랫폼</h1>
+                    <div style={{ marginTop: '6px', color: '#777', fontSize: '14px' }}>
+                        {authPage === 'login' ? '로그인 페이지' : '회원가입 페이지'}
+                    </div>
+                </header>
+                <div
+                    style={{
+                        maxWidth: '420px',
+                        margin: '40px auto',
+                        padding: '20px',
+                        backgroundColor: '#fff',
+                        borderRadius: '10px',
+                        border: '1px solid #e5e5e5',
+                        boxShadow: '0 3px 10px rgba(0,0,0,0.05)',
+                    }}
+                >
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}>
+                        <button
+                            type="button"
+                            onClick={() => setAuthPage('login')}
+                            style={{
+                                flex: 1,
+                                padding: '10px',
+                                borderRadius: '6px',
+                                border: authPage === 'login' ? 'none' : '1px solid #d0d0d0',
+                                backgroundColor: authPage === 'login' ? '#1976d2' : '#fff',
+                                color: authPage === 'login' ? '#fff' : '#444',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                            }}
+                        >
+                            로그인
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setAuthPage('signup')}
+                            style={{
+                                flex: 1,
+                                padding: '10px',
+                                borderRadius: '6px',
+                                border: authPage === 'signup' ? 'none' : '1px solid #d0d0d0',
+                                backgroundColor: authPage === 'signup' ? '#1976d2' : '#fff',
+                                color: authPage === 'signup' ? '#fff' : '#444',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                            }}
+                        >
+                            회원가입
+                        </button>
+                    </div>
+                    {authPage === 'login' ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                            <input
+                                type="text"
+                                placeholder="이름"
+                                value={loginName}
+                                onChange={(e) => setLoginName(e.target.value)}
+                                style={{ padding: '10px', borderRadius: '6px', border: '1px solid #ddd' }}
+                            />
+                            <input
+                                type="password"
+                                placeholder="비밀번호"
+                                value={loginPassword}
+                                onChange={(e) => setLoginPassword(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleLogin();
+                                }}
+                                style={{ padding: '10px', borderRadius: '6px', border: '1px solid #ddd' }}
+                            />
+                            <button
+                                type="button"
+                                onClick={handleLogin}
+                                disabled={authLoading}
+                                style={{
+                                    padding: '10px 12px',
+                                    borderRadius: '6px',
+                                    border: 'none',
+                                    backgroundColor: '#1976d2',
+                                    color: '#fff',
+                                    fontWeight: 700,
+                                    cursor: authLoading ? 'not-allowed' : 'pointer',
+                                }}
+                            >
+                                로그인
+                            </button>
+                        </div>
+                    ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                            <input
+                                type="text"
+                                placeholder="이름"
+                                value={signupName}
+                                onChange={(e) => setSignupName(e.target.value)}
+                                style={{ padding: '10px', borderRadius: '6px', border: '1px solid #ddd' }}
+                            />
+                            <input
+                                type="password"
+                                placeholder="비밀번호"
+                                value={signupPassword}
+                                onChange={(e) => setSignupPassword(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleSignup();
+                                }}
+                                style={{ padding: '10px', borderRadius: '6px', border: '1px solid #ddd' }}
+                            />
+                            <button
+                                type="button"
+                                onClick={handleSignup}
+                                disabled={authLoading}
+                                style={{
+                                    padding: '10px 12px',
+                                    borderRadius: '6px',
+                                    border: '1px solid #1976d2',
+                                    backgroundColor: '#fff',
+                                    color: '#1976d2',
+                                    fontWeight: 700,
+                                    cursor: authLoading ? 'not-allowed' : 'pointer',
+                                }}
+                            >
+                                회원가입
+                            </button>
+                        </div>
+                    )}
+                    {authMessage && <div style={{ marginTop: '12px', color: '#c62828', fontWeight: 600 }}>{authMessage}</div>}
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div style={{ padding: '20px', fontFamily: 'sans-serif', backgroundColor: '#f9f9f9', minHeight: '100vh' }}>
             <header style={{ marginBottom: '20px' }}>
@@ -576,6 +883,36 @@ function App() {
                     여러 종목 + 장기 기간 캔들 차트
                 </div>
             </header>
+
+            <div
+                style={{
+                    marginBottom: '20px',
+                    padding: '15px',
+                    backgroundColor: '#fff',
+                    borderRadius: '8px',
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px',
+                }}
+            >
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+                    <div style={{ fontWeight: 700, color: '#333' }}>로그인 사용자: {currentUser?.name || loginName || '사용자'}</div>
+                    <button
+                        type="button"
+                        onClick={handleLogout}
+                        style={{
+                            padding: '8px 12px',
+                            borderRadius: '6px',
+                            border: '1px solid #ccc',
+                            backgroundColor: '#fff',
+                            cursor: 'pointer',
+                        }}
+                    >
+                        로그아웃
+                    </button>
+                </div>
+            </div>
 
             <div
                 style={{
@@ -679,13 +1016,13 @@ function App() {
                                 <button
                                     type="button"
                                     onClick={() => toggleWatchlist(stock.code)}
-                                    disabled={watchlistLoading}
+                                    disabled={watchlistLoading || !isLoggedIn}
                                     style={{
                                         border: '1px solid #d9d9d9',
                                         borderRadius: '6px',
                                         backgroundColor: inWatchlist ? '#fff8e1' : '#fff',
                                         color: inWatchlist ? '#c49000' : '#666',
-                                        cursor: watchlistLoading ? 'not-allowed' : 'pointer',
+                                        cursor: watchlistLoading || !isLoggedIn ? 'not-allowed' : 'pointer',
                                         padding: '2px 8px',
                                         fontWeight: 700,
                                     }}
@@ -747,6 +1084,7 @@ function App() {
                 }}
             >
                 <strong style={{ color: '#333' }}>관심종목</strong>
+                {!isLoggedIn && <span style={{ color: '#666' }}>로그인 후 사용자별 관심종목을 사용할 수 있습니다.</span>}
                 {watchlistCodes.length === 0 && <span style={{ color: '#666' }}>등록된 관심종목이 없습니다.</span>}
                 {watchlistCodes.map((code) => (
                     <span
@@ -810,13 +1148,13 @@ function App() {
                         type="date"
                         value={replayStartDate}
                         onChange={(e) => setReplayStartDate(e.target.value)}
-                        disabled={replayLoading}
+                        disabled={replayLoading || !isLoggedIn}
                         style={{ padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
                     />
                     <button
                         type="button"
                         onClick={startReplay}
-                        disabled={replayLoading || simLoading}
+                        disabled={replayLoading || simLoading || !isLoggedIn}
                         style={{ padding: '8px 12px', border: 'none', borderRadius: '6px', backgroundColor: '#3949ab', color: '#fff' }}
                     >
                         리플레이 시작
@@ -824,7 +1162,7 @@ function App() {
                     <button
                         type="button"
                         onClick={pauseReplay}
-                        disabled={replayLoading || simLoading}
+                        disabled={replayLoading || simLoading || !isLoggedIn}
                         style={{ padding: '8px 12px', border: '1px solid #ccc', borderRadius: '6px', backgroundColor: '#fff' }}
                     >
                         일시정지
@@ -838,7 +1176,7 @@ function App() {
                     <select
                         value={tradeCode}
                         onChange={(e) => setTradeCode(e.target.value)}
-                        disabled={simLoading || chartCodes.length === 0}
+                        disabled={simLoading || chartCodes.length === 0 || !isLoggedIn}
                         style={{ padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
                     >
                         {chartCodes.map((code) => (
@@ -853,13 +1191,13 @@ function App() {
                         min="1"
                         value={tradeQty}
                         onChange={(e) => setTradeQty(e.target.value)}
-                        disabled={simLoading}
+                        disabled={simLoading || !isLoggedIn}
                         style={{ width: '100px', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
                     />
                     <button
                         type="button"
                         onClick={() => submitOrder('BUY')}
-                        disabled={simLoading || !tradeCode}
+                        disabled={simLoading || !tradeCode || !isLoggedIn}
                         style={{ padding: '8px 12px', border: 'none', borderRadius: '6px', backgroundColor: '#e53935', color: '#fff' }}
                     >
                         매수
@@ -867,7 +1205,7 @@ function App() {
                     <button
                         type="button"
                         onClick={() => submitOrder('SELL')}
-                        disabled={simLoading || !tradeCode}
+                        disabled={simLoading || !tradeCode || !isLoggedIn}
                         style={{ padding: '8px 12px', border: 'none', borderRadius: '6px', backgroundColor: '#00897b', color: '#fff' }}
                     >
                         매도
@@ -875,7 +1213,7 @@ function App() {
                     <button
                         type="button"
                         onClick={resetSimulation}
-                        disabled={simLoading}
+                        disabled={simLoading || !isLoggedIn}
                         style={{ padding: '8px 12px', border: '1px solid #ccc', borderRadius: '6px', backgroundColor: '#fff' }}
                     >
                         초기화
@@ -907,7 +1245,7 @@ function App() {
                                         max={Math.max(1, Number(h.quantity) || 1)}
                                         className="sim-holding-qty-input"
                                         value={holdingOrderQtys[h.code] ?? 1}
-                                        disabled={simLoading}
+                                        disabled={simLoading || !isLoggedIn}
                                         onChange={(e) => {
                                             const raw = e.target.value;
                                             setHoldingOrderQtys((prev) => ({
@@ -919,7 +1257,7 @@ function App() {
                                     <button
                                         type="button"
                                         className="sim-holding-buy-btn"
-                                        disabled={simLoading}
+                                        disabled={simLoading || !isLoggedIn}
                                         onClick={() => {
                                             const qty = getHoldingOrderQty(h.code);
                                             setTradeCode(h.code);
@@ -932,7 +1270,7 @@ function App() {
                                     <button
                                         type="button"
                                         className="sim-holding-sell-btn"
-                                        disabled={simLoading}
+                                        disabled={simLoading || !isLoggedIn}
                                         onClick={() => {
                                             const qty = Math.min(getHoldingOrderQty(h.code), Math.max(1, Number(h.quantity) || 1));
                                             setTradeCode(h.code);
@@ -957,5 +1295,3 @@ function App() {
 }
 
 export default App;
-
-

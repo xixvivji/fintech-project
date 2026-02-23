@@ -1,6 +1,5 @@
 package com.example.backend.auth;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -19,16 +18,14 @@ public class JwtService {
     private static final Base64.Decoder URL_DECODER = Base64.getUrlDecoder();
     private static final String HMAC_SHA256 = "HmacSHA256";
 
-    private final ObjectMapper objectMapper;
+    private final ObjectMapper objectMapper = new ObjectMapper();
     private final byte[] secret;
     private final long expiresSec;
 
     public JwtService(
-            ObjectMapper objectMapper,
             @Value("${auth.jwt-secret}") String jwtSecret,
             @Value("${auth.jwt-expire-seconds:86400}") long expiresSec
     ) {
-        this.objectMapper = objectMapper;
         if (jwtSecret == null || jwtSecret.isBlank()) {
             throw new IllegalStateException("JWT secret is required.");
         }
@@ -106,7 +103,9 @@ public class JwtService {
     private Map<String, Object> decodeJson(String base64UrlJson) {
         try {
             byte[] raw = URL_DECODER.decode(base64UrlJson);
-            return objectMapper.readValue(raw, new TypeReference<>() {});
+            @SuppressWarnings("unchecked")
+            Map<String, Object> decoded = objectMapper.readValue(raw, Map.class);
+            return decoded;
         } catch (Exception e) {
             throw new IllegalArgumentException("토큰 payload 디코딩 실패");
         }

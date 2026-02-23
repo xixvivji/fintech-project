@@ -5,7 +5,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Comparator;
 
 @Service
 public class WatchlistService {
@@ -17,9 +16,9 @@ public class WatchlistService {
     }
 
     @Transactional(readOnly = true)
-    public List<WatchlistItemDto> getAll() {
-        List<WatchlistEntity> entities = watchlistRepository.findAll();
-        entities.sort(Comparator.comparingLong(WatchlistEntity::getAddedAt));
+    public List<WatchlistItemDto> getAll(Long userId) {
+        validateUserId(userId);
+        List<WatchlistEntity> entities = watchlistRepository.findByUserIdOrderByAddedAtAsc(userId);
         List<WatchlistItemDto> result = new ArrayList<>();
         for (WatchlistEntity entity : entities) {
             result.add(new WatchlistItemDto(entity.getCode(), entity.getName(), entity.getAddedAt()));
@@ -28,17 +27,19 @@ public class WatchlistService {
     }
 
     @Transactional
-    public WatchlistItemDto add(String code, String name) {
+    public WatchlistItemDto add(Long userId, String code, String name) {
+        validateUserId(userId);
         String normalizedCode = normalizeCode(code);
-        if (watchlistRepository.existsById(normalizedCode)) {
+        if (watchlistRepository.existsByUserIdAndCode(userId, normalizedCode)) {
             throw new IllegalArgumentException("이미 등록된 종목입니다: " + normalizedCode);
         }
-        if (watchlistRepository.count() >= MAX_ITEMS) {
+        if (watchlistRepository.countByUserId(userId) >= MAX_ITEMS) {
             throw new IllegalArgumentException("관심종목은 최대 " + MAX_ITEMS + "개까지 등록할 수 있습니다.");
         }
 
         String normalizedName = normalizeName(name, normalizedCode);
         WatchlistEntity entity = new WatchlistEntity();
+        entity.setUserId(userId);
         entity.setCode(normalizedCode);
         entity.setName(normalizedName);
         entity.setAddedAt(System.currentTimeMillis());
@@ -49,12 +50,19 @@ public class WatchlistService {
     }
 
     @Transactional
-    public void remove(String code) {
+    public void remove(Long userId, String code) {
+        validateUserId(userId);
         String normalizedCode = normalizeCode(code);
-        if (!watchlistRepository.existsById(normalizedCode)) {
+        long deleted = watchlistRepository.deleteByUserIdAndCode(userId, normalizedCode);
+        if (deleted == 0) {
             throw new IllegalArgumentException("등록되지 않은 종목입니다: " + normalizedCode);
         }
-        watchlistRepository.deleteById(normalizedCode);
+    }
+
+    private void validateUserId(Long userId) {
+        if (userId == null || userId <= 0) {
+            throw new IllegalArgumentException("유효한 사용자 정보가 필요합니다.");
+        }
     }
 
     private String normalizeCode(String code) {

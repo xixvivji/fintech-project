@@ -1,45 +1,60 @@
 package com.example.backend.simulation;
 
+import com.example.backend.auth.JwtService;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/api/sim")
 public class SimulationController {
     private final SimulationService simulationService;
+    private final JwtService jwtService;
 
-    public SimulationController(SimulationService simulationService) {
+    public SimulationController(SimulationService simulationService, JwtService jwtService) {
         this.simulationService = simulationService;
+        this.jwtService = jwtService;
     }
 
     @GetMapping("/portfolio")
-    public PortfolioResponseDto getPortfolio() {
-        return simulationService.getPortfolio();
+    public PortfolioResponseDto getPortfolio(@RequestHeader("Authorization") String authorizationHeader) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
+        return simulationService.getPortfolio(userId);
     }
 
     @PostMapping("/order")
-    public SimOrderResponseDto placeOrder(@RequestBody SimOrderRequestDto request) {
-        return simulationService.placeMarketOrder(request);
+    public SimOrderResponseDto placeOrder(
+            @RequestHeader("Authorization") String authorizationHeader,
+            @RequestBody SimOrderRequestDto request
+    ) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
+        return simulationService.placeMarketOrder(userId, request);
     }
 
     @PostMapping("/reset")
-    public PortfolioResponseDto reset() {
-        simulationService.reset();
-        return simulationService.getPortfolio();
+    public PortfolioResponseDto reset(@RequestHeader("Authorization") String authorizationHeader) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
+        simulationService.reset(userId);
+        return simulationService.getPortfolio(userId);
     }
 
     @PostMapping("/replay/start")
-    public PortfolioResponseDto startReplay(@RequestBody(required = false) ReplayStartRequestDto request) {
+    public PortfolioResponseDto startReplay(
+            @RequestHeader("Authorization") String authorizationHeader,
+            @RequestBody(required = false) ReplayStartRequestDto request
+    ) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
         String startDate = request == null ? null : request.getStartDate();
-        return simulationService.startReplay(startDate);
+        return simulationService.startReplay(userId, startDate);
     }
 
     @PostMapping("/replay/pause")
-    public PortfolioResponseDto pauseReplay() {
-        return simulationService.pauseReplay();
+    public PortfolioResponseDto pauseReplay(@RequestHeader("Authorization") String authorizationHeader) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
+        return simulationService.pauseReplay(userId);
     }
 
     @GetMapping("/replay/state")
-    public ReplayStateDto getReplayState() {
-        return simulationService.getReplayState();
+    public ReplayStateDto getReplayState(@RequestHeader("Authorization") String authorizationHeader) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
+        return simulationService.getReplayState(userId);
     }
 }
