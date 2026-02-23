@@ -1,7 +1,10 @@
 package com.example.backend.simulation;
 
 import com.example.backend.auth.JwtService;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/sim")
@@ -56,5 +59,21 @@ public class SimulationController {
     public ReplayStateDto getReplayState(@RequestHeader("Authorization") String authorizationHeader) {
         Long userId = jwtService.validateAndGetUserId(authorizationHeader);
         return simulationService.getReplayState(userId);
+    }
+
+    @GetMapping("/orders/pending")
+    public List<PendingOrderDto> getPendingOrders(@RequestHeader("Authorization") String authorizationHeader) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
+        return simulationService.getPendingOrders(userId);
+    }
+
+    @DeleteMapping("/orders/pending/{orderId}")
+    public ResponseEntity<Void> cancelPendingOrder(
+            @RequestHeader("Authorization") String authorizationHeader,
+            @PathVariable Long orderId
+    ) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
+        simulationService.cancelPendingOrder(userId, orderId);
+        return ResponseEntity.noContent().build();
     }
 }

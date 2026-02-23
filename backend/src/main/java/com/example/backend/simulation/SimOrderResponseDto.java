@@ -1,27 +1,33 @@
 package com.example.backend.simulation;
 
 public class SimOrderResponseDto {
+    private String status;
+    private String message;
     private String code;
     private String side;
     private String orderType;
     private Double requestedLimitPrice;
     private int quantity;
-    private double price;
-    private double amount;
-    private double cashAfter;
+    private Double price;
+    private Double amount;
+    private Double cashAfter;
     private long tradeAt;
 
     public SimOrderResponseDto(
+            String status,
+            String message,
             String code,
             String side,
             String orderType,
             Double requestedLimitPrice,
             int quantity,
-            double price,
-            double amount,
-            double cashAfter,
+            Double price,
+            Double amount,
+            Double cashAfter,
             long tradeAt
     ) {
+        this.status = status;
+        this.message = message;
         this.code = code;
         this.side = side;
         this.orderType = orderType;
@@ -31,6 +37,14 @@ public class SimOrderResponseDto {
         this.amount = amount;
         this.cashAfter = cashAfter;
         this.tradeAt = tradeAt;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public String getMessage() {
+        return message;
     }
 
     public String getCode() {
@@ -53,15 +67,15 @@ public class SimOrderResponseDto {
         return quantity;
     }
 
-    public double getPrice() {
+    public Double getPrice() {
         return price;
     }
 
-    public double getAmount() {
+    public Double getAmount() {
         return amount;
     }
 
-    public double getCashAfter() {
+    public Double getCashAfter() {
         return cashAfter;
     }
 

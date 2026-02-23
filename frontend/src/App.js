@@ -252,6 +252,8 @@ function App() {
     const [replayLoading, setReplayLoading] = useState(false);
     const [portfolio, setPortfolio] = useState(null);
     const [replayState, setReplayState] = useState(null);
+    const [pendingOrders, setPendingOrders] = useState([]);
+    const [pendingLoading, setPendingLoading] = useState(false);
     const [replayStartDate, setReplayStartDate] = useState('');
     const [tradeCode, setTradeCode] = useState('');
     const [tradeQty, setTradeQty] = useState(1);
@@ -339,6 +341,7 @@ function App() {
         setWatchlistCodes([]);
         setPortfolio(null);
         setReplayState(null);
+        setPendingOrders([]);
         setTradeMessage('');
     }, []);
 
@@ -508,6 +511,29 @@ function App() {
         loadPortfolio();
     }, [loadPortfolio]);
 
+    const loadPendingOrders = useCallback(async () => {
+        if (!isLoggedIn) {
+            setPendingOrders([]);
+            return;
+        }
+        setPendingLoading(true);
+        try {
+            const res = await axios.get(`${API_BASE_URL}/api/sim/orders/pending`);
+            setPendingOrders(Array.isArray(res.data) ? res.data : []);
+        } catch (err) {
+            const serverMessage = err?.response?.data?.message;
+            if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
+                setTradeMessage(`미체결 주문 조회 실패: ${serverMessage}`);
+            }
+        } finally {
+            setPendingLoading(false);
+        }
+    }, [isLoggedIn]);
+
+    useEffect(() => {
+        loadPendingOrders();
+    }, [loadPendingOrders]);
+
     useEffect(() => {
         if (!replayStartDate) {
             setReplayStartDate(DEFAULT_REPLAY_START_DATE);
@@ -547,6 +573,11 @@ function App() {
         }, 5000);
         return () => clearInterval(timer);
     }, [replayState?.running, loadReplayState]);
+
+    useEffect(() => {
+        if (!isLoggedIn) return;
+        loadPendingOrders();
+    }, [isLoggedIn, replayState?.currentDate, loadPendingOrders]);
 
     useEffect(() => {
         if (tradeableCodes.length === 0) {
@@ -696,16 +727,21 @@ function App() {
                 quantity: qty,
             });
             const orderTypeLabel = res.data.orderType === 'LIMIT' ? '지정가' : '시장가';
-            setTradeMessage(`${orderTypeLabel} ${side === 'BUY' ? '매수' : '매도'} 체결: ${res.data.code} ${res.data.quantity}주 @ ${res.data.price}`);
+            if (res.data.status === 'PENDING') {
+                setTradeMessage(`${orderTypeLabel} ${side === 'BUY' ? '매수' : '매도'} 주문 접수: ${res.data.code} ${res.data.quantity}주 @ ${res.data.requestedLimitPrice}`);
+            } else {
+                setTradeMessage(`${orderTypeLabel} ${side === 'BUY' ? '매수' : '매도'} 체결: ${res.data.code} ${res.data.quantity}주 @ ${res.data.price}`);
+            }
             setPortfolio((prev) => {
                 if (!prev) return prev;
                 return {
                     ...prev,
-                    cash: res.data.cashAfter,
+                    cash: typeof res.data.cashAfter === 'number' ? res.data.cashAfter : prev.cash,
                 };
             });
             setSimLoading(false);
             loadReplayState();
+            loadPendingOrders();
         } catch (err) {
             const serverMessage = err?.response?.data?.message;
             if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
@@ -740,6 +776,7 @@ function App() {
             });
             setSimLoading(false);
             loadReplayState();
+            loadPendingOrders();
         } catch (err) {
             const serverMessage = err?.response?.data?.message;
             if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
@@ -762,6 +799,7 @@ function App() {
                 startDate: replayStartDate,
             });
             await loadReplayState();
+            await loadPendingOrders();
             setTradeMessage('리플레이를 시작했습니다. 1분마다 1영업일씩 진행됩니다.');
         } catch (err) {
             const serverMessage = err?.response?.data?.message;
@@ -784,6 +822,7 @@ function App() {
         try {
             await axios.post(`${API_BASE_URL}/api/sim/replay/pause`);
             await loadReplayState();
+            await loadPendingOrders();
             setTradeMessage('리플레이를 일시정지했습니다.');
         } catch (err) {
             const serverMessage = err?.response?.data?.message;
@@ -797,9 +836,40 @@ function App() {
         }
     };
 
+    const cancelPendingOrder = async (orderId) => {
+        if (!isLoggedIn) {
+            setTradeMessage('로그인 후 사용할 수 있습니다.');
+            return;
+        }
+        setPendingLoading(true);
+        try {
+            await axios.delete(`${API_BASE_URL}/api/sim/orders/pending/${orderId}`);
+            await loadPendingOrders();
+            setTradeMessage('미체결 주문을 취소했습니다.');
+        } catch (err) {
+            const serverMessage = err?.response?.data?.message;
+            if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
+                setTradeMessage(`주문 취소 실패: ${serverMessage}`);
+            } else {
+                setTradeMessage('주문 취소 실패');
+            }
+        } finally {
+            setPendingLoading(false);
+        }
+    };
+
     const fmt = (value) => {
         if (typeof value !== 'number') return '-';
         return value.toLocaleString('ko-KR');
+    };
+
+    const fmtDateTime = (value) => {
+        if (!value) return '-';
+        try {
+            return new Date(value).toLocaleString('ko-KR');
+        } catch (e) {
+            return String(value);
+        }
     };
 
     const getHoldingOrderQty = (code) => {
@@ -1357,6 +1427,55 @@ function App() {
                     </button>
                 </div>
                 {tradeMessage && <div style={{ color: '#555' }}>{tradeMessage}</div>}
+                <div
+                    style={{
+                        border: '1px solid #eceff1',
+                        borderRadius: '8px',
+                        padding: '10px',
+                        backgroundColor: '#fafbfc',
+                    }}
+                >
+                    <div style={{ fontWeight: 700, marginBottom: '6px' }}>미체결 지정가 주문</div>
+                    {pendingLoading && <div style={{ color: '#607d8b' }}>불러오는 중...</div>}
+                    {!pendingLoading && pendingOrders.length === 0 && (
+                        <div style={{ color: '#78909c' }}>현재 미체결 주문이 없습니다.</div>
+                    )}
+                    {!pendingLoading &&
+                        pendingOrders.map((o) => (
+                            <div
+                                key={o.id}
+                                style={{
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                    padding: '6px 0',
+                                    borderTop: '1px solid #eceff1',
+                                }}
+                            >
+                                <div style={{ fontSize: '13px', color: '#37474f' }}>
+                                    {o.side === 'BUY' ? '매수' : '매도'} {getStockNameByCode(o.code)} ({o.code}) {o.quantity}주
+                                    {' @ '}
+                                    {fmt(o.limitPrice)}원 · 접수 {fmtDateTime(o.createdAt)}
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => cancelPendingOrder(o.id)}
+                                    disabled={pendingLoading || simLoading || !isLoggedIn}
+                                    style={{
+                                        padding: '6px 10px',
+                                        borderRadius: '6px',
+                                        border: '1px solid #cfd8dc',
+                                        backgroundColor: '#fff',
+                                        color: '#455a64',
+                                        cursor: pendingLoading || simLoading || !isLoggedIn ? 'not-allowed' : 'pointer',
+                                    }}
+                                >
+                                    취소
+                                </button>
+                            </div>
+                        ))}
+                </div>
                 {portfolio && (
                     <div style={{ fontSize: '14px', color: '#333' }}>
                         현금: {fmt(portfolio.cash)}원 | 평가금액: {fmt(portfolio.marketValue)}원 | 총자산: {fmt(portfolio.totalValue)}원 | 실현손익: {fmt(portfolio.realizedPnl)}원 | 미실현손익: {fmt(portfolio.unrealizedPnl)}원

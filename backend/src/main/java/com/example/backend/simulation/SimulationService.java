@@ -25,18 +25,21 @@ public class SimulationService {
     private final SimAccountRepository simAccountRepository;
     private final SimPositionRepository simPositionRepository;
     private final SimReplayStateRepository simReplayStateRepository;
+    private final SimPendingOrderRepository simPendingOrderRepository;
     private final ScheduledExecutorService replayExecutor = Executors.newSingleThreadScheduledExecutor();
 
     public SimulationService(
             StockService stockService,
             SimAccountRepository simAccountRepository,
             SimPositionRepository simPositionRepository,
-            SimReplayStateRepository simReplayStateRepository
+            SimReplayStateRepository simReplayStateRepository,
+            SimPendingOrderRepository simPendingOrderRepository
     ) {
         this.stockService = stockService;
         this.simAccountRepository = simAccountRepository;
         this.simPositionRepository = simPositionRepository;
         this.simReplayStateRepository = simReplayStateRepository;
+        this.simPendingOrderRepository = simPendingOrderRepository;
     }
 
     @PostConstruct
@@ -115,60 +118,49 @@ public class SimulationService {
         LocalDate valuationDate = replayState.getReplayDate() == null ? LocalDate.now() : LocalDate.parse(replayState.getReplayDate());
 
         double price = stockService.getClosePriceOnOrBefore(code, valuationDate);
-        validateExecutableByOrderType(side, orderType, price, limitPrice);
-        double amount = price * qty;
-        long tradeAt = System.currentTimeMillis();
-
-        if ("BUY".equals(side)) {
-            if (account.getCash() < amount) {
-                throw new IllegalArgumentException("잔고가 부족합니다.");
-            }
-
-            SimPositionEntity position = simPositionRepository.findByUserIdAndCode(userId, code).orElse(null);
-            if (position == null) {
-                position = new SimPositionEntity();
-                position.setUserId(userId);
-                position.setCode(code);
-                position.setQuantity(qty);
-                position.setAvgPrice(price);
-            } else {
-                int nextQty = position.getQuantity() + qty;
-                double nextAvg = ((position.getAvgPrice() * position.getQuantity()) + (price * qty)) / nextQty;
-                position.setQuantity(nextQty);
-                position.setAvgPrice(nextAvg);
-            }
-            simPositionRepository.save(position);
-            account.setCash(account.getCash() - amount);
-        } else {
-            SimPositionEntity position = simPositionRepository.findByUserIdAndCode(userId, code).orElse(null);
-            if (position == null || position.getQuantity() < qty) {
-                throw new IllegalArgumentException("매도 가능한 수량이 부족합니다.");
-            }
-
-            account.setCash(account.getCash() + amount);
-            account.setRealizedPnl(account.getRealizedPnl() + ((price - position.getAvgPrice()) * qty));
-
-            int remain = position.getQuantity() - qty;
-            if (remain == 0) {
-                simPositionRepository.delete(position);
-            } else {
-                position.setQuantity(remain);
-                simPositionRepository.save(position);
-            }
+        if ("MARKET".equals(orderType) || isLimitExecutable(side, price, limitPrice)) {
+            executeTrade(userId, account, code, side, qty, price);
+            simAccountRepository.save(account);
+            double amount = round2(price * qty);
+            return new SimOrderResponseDto(
+                    "FILLED",
+                    "주문이 체결되었습니다.",
+                    code,
+                    side,
+                    orderType,
+                    limitPrice,
+                    qty,
+                    round2(price),
+                    amount,
+                    round2(account.getCash()),
+                    System.currentTimeMillis()
+            );
         }
 
-        simAccountRepository.save(account);
+        validatePendingOrderCanBePlaced(userId, account, code, side, qty, limitPrice);
+
+        SimPendingOrderEntity pendingOrder = new SimPendingOrderEntity();
+        pendingOrder.setUserId(userId);
+        pendingOrder.setCode(code);
+        pendingOrder.setSide(side);
+        pendingOrder.setOrderType(orderType);
+        pendingOrder.setLimitPrice(limitPrice);
+        pendingOrder.setQuantity(qty);
+        pendingOrder.setCreatedAt(System.currentTimeMillis());
+        simPendingOrderRepository.save(pendingOrder);
 
         return new SimOrderResponseDto(
+                "PENDING",
+                "지정가 주문이 접수되었습니다. 조건 충족 시 자동 체결됩니다.",
                 code,
                 side,
                 orderType,
                 limitPrice,
                 qty,
-                round2(price),
-                round2(amount),
+                null,
+                null,
                 round2(account.getCash()),
-                tradeAt
+                pendingOrder.getCreatedAt()
         );
     }
 
@@ -187,6 +179,7 @@ public class SimulationService {
         }
         replayState.setRunning(true);
         simReplayStateRepository.save(replayState);
+        processPendingOrders(userId, LocalDate.parse(replayState.getReplayDate()));
 
         return getPortfolio(userId);
     }
@@ -215,6 +208,39 @@ public class SimulationService {
         );
     }
 
+    @Transactional(readOnly = true)
+    public synchronized List<PendingOrderDto> getPendingOrders(Long userId) {
+        validateUserId(userId);
+        List<SimPendingOrderEntity> orders = simPendingOrderRepository.findByUserIdOrderByCreatedAtAsc(userId);
+        List<PendingOrderDto> result = new ArrayList<>();
+        for (SimPendingOrderEntity order : orders) {
+            result.add(new PendingOrderDto(
+                    order.getId(),
+                    order.getCode(),
+                    order.getSide(),
+                    order.getOrderType(),
+                    round2(order.getLimitPrice()),
+                    order.getQuantity(),
+                    order.getCreatedAt()
+            ));
+        }
+        return result;
+    }
+
+    @Transactional
+    public synchronized void cancelPendingOrder(Long userId, Long orderId) {
+        validateUserId(userId);
+        if (orderId == null || orderId <= 0) {
+            throw new IllegalArgumentException("유효한 주문 ID가 필요합니다.");
+        }
+        SimPendingOrderEntity order = simPendingOrderRepository.findById(orderId)
+                .orElseThrow(() -> new IllegalArgumentException("해당 미체결 주문이 없습니다."));
+        if (!userId.equals(order.getUserId())) {
+            throw new IllegalArgumentException("본인 주문만 취소할 수 있습니다.");
+        }
+        simPendingOrderRepository.delete(order);
+    }
+
     @Transactional
     public synchronized void reset(Long userId) {
         validateUserId(userId);
@@ -224,6 +250,7 @@ public class SimulationService {
         simAccountRepository.save(account);
 
         simPositionRepository.deleteByUserId(userId);
+        simPendingOrderRepository.deleteByUserId(userId);
 
         SimReplayStateEntity replayState = getOrCreateReplayState(userId);
         replayState.setReplayDate(null);
@@ -239,6 +266,7 @@ public class SimulationService {
             LocalDate next = LocalDate.parse(replayState.getReplayDate()).plusDays(REPLAY_STEP_DAYS);
             replayState.setReplayDate(next.toString());
             simReplayStateRepository.save(replayState);
+            processPendingOrders(replayState.getUserId(), next);
         }
     }
 
@@ -307,15 +335,94 @@ public class SimulationService {
         return round2(limitPrice);
     }
 
-    private void validateExecutableByOrderType(String side, String orderType, double marketPrice, Double limitPrice) {
-        if (!"LIMIT".equals(orderType)) {
-            return;
-        }
+    private boolean isLimitExecutable(String side, double marketPrice, Double limitPrice) {
         if ("BUY".equals(side) && marketPrice > limitPrice) {
-            throw new IllegalArgumentException("지정가 미체결: 현재가가 지정가보다 높습니다.");
+            return false;
         }
         if ("SELL".equals(side) && marketPrice < limitPrice) {
-            throw new IllegalArgumentException("지정가 미체결: 현재가가 지정가보다 낮습니다.");
+            return false;
+        }
+        return true;
+    }
+
+    private void validatePendingOrderCanBePlaced(Long userId, SimAccountEntity account, String code, String side, int qty, Double limitPrice) {
+        if ("BUY".equals(side)) {
+            double worstCaseAmount = limitPrice * qty;
+            if (account.getCash() < worstCaseAmount) {
+                throw new IllegalArgumentException("잔고가 부족합니다.");
+            }
+            return;
+        }
+
+        SimPositionEntity position = simPositionRepository.findByUserIdAndCode(userId, code).orElse(null);
+        if (position == null || position.getQuantity() < qty) {
+            throw new IllegalArgumentException("매도 가능한 수량이 부족합니다.");
+        }
+    }
+
+    private void executeTrade(Long userId, SimAccountEntity account, String code, String side, int qty, double price) {
+        double amount = price * qty;
+        if ("BUY".equals(side)) {
+            if (account.getCash() < amount) {
+                throw new IllegalArgumentException("잔고가 부족합니다.");
+            }
+            SimPositionEntity position = simPositionRepository.findByUserIdAndCode(userId, code).orElse(null);
+            if (position == null) {
+                position = new SimPositionEntity();
+                position.setUserId(userId);
+                position.setCode(code);
+                position.setQuantity(qty);
+                position.setAvgPrice(price);
+            } else {
+                int nextQty = position.getQuantity() + qty;
+                double nextAvg = ((position.getAvgPrice() * position.getQuantity()) + (price * qty)) / nextQty;
+                position.setQuantity(nextQty);
+                position.setAvgPrice(nextAvg);
+            }
+            simPositionRepository.save(position);
+            account.setCash(account.getCash() - amount);
+            return;
+        }
+
+        SimPositionEntity position = simPositionRepository.findByUserIdAndCode(userId, code).orElse(null);
+        if (position == null || position.getQuantity() < qty) {
+            throw new IllegalArgumentException("매도 가능한 수량이 부족합니다.");
+        }
+        account.setCash(account.getCash() + amount);
+        account.setRealizedPnl(account.getRealizedPnl() + ((price - position.getAvgPrice()) * qty));
+
+        int remain = position.getQuantity() - qty;
+        if (remain == 0) {
+            simPositionRepository.delete(position);
+        } else {
+            position.setQuantity(remain);
+            simPositionRepository.save(position);
+        }
+    }
+
+    private void processPendingOrders(Long userId, LocalDate valuationDate) {
+        List<SimPendingOrderEntity> orders = simPendingOrderRepository.findByUserIdOrderByCreatedAtAsc(userId);
+        if (orders.isEmpty()) {
+            return;
+        }
+        SimAccountEntity account = getOrCreateAccount(userId);
+        boolean accountChanged = false;
+        for (SimPendingOrderEntity order : orders) {
+            double marketPrice = stockService.getClosePriceOnOrBefore(order.getCode(), valuationDate);
+            if (!isLimitExecutable(order.getSide(), marketPrice, order.getLimitPrice())) {
+                continue;
+            }
+            try {
+                executeTrade(userId, account, order.getCode(), order.getSide(), order.getQuantity(), marketPrice);
+                accountChanged = true;
+                simPendingOrderRepository.delete(order);
+            } catch (IllegalArgumentException e) {
+                // Cannot execute anymore (insufficient cash/quantity), so cancel this pending order.
+                simPendingOrderRepository.delete(order);
+            }
+        }
+        if (accountChanged) {
+            simAccountRepository.save(account);
         }
     }
 
