@@ -3,6 +3,8 @@ package com.example.backend.simulation;
 public class SimOrderRequestDto {
     private String code;
     private String side;
+    private String orderType;
+    private Double limitPrice;
     private int quantity;
 
     public String getCode() {
@@ -19,6 +21,22 @@ public class SimOrderRequestDto {
 
     public void setSide(String side) {
         this.side = side;
+    }
+
+    public String getOrderType() {
+        return orderType;
+    }
+
+    public void setOrderType(String orderType) {
+        this.orderType = orderType;
+    }
+
+    public Double getLimitPrice() {
+        return limitPrice;
+    }
+
+    public void setLimitPrice(Double limitPrice) {
+        this.limitPrice = limitPrice;
     }
 
     public int getQuantity() {

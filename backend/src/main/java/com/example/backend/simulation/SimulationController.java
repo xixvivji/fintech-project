@@ -26,7 +26,7 @@ public class SimulationController {
             @RequestBody SimOrderRequestDto request
     ) {
         Long userId = jwtService.validateAndGetUserId(authorizationHeader);
-        return simulationService.placeMarketOrder(userId, request);
+        return simulationService.placeOrder(userId, request);
     }
 
     @PostMapping("/reset")

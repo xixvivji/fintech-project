@@ -12,6 +12,8 @@ const PERIOD_OPTIONS = [
 ];
 const API_BASE_URL = 'http://localhost:8080';
 const AUTH_TOKEN_KEY = 'fintech_access_token';
+const DEFAULT_REPLAY_START_DATE = '2025-01-01';
+const INITIAL_CASH = 50000000;
 
 const STOCK_OPTIONS = [
     { name: '삼성전자', code: '005930' },
@@ -84,7 +86,8 @@ function readStoredToken() {
 function normalizeAuthPath(pathname) {
     if (pathname === '/signup') return '/signup';
     if (pathname === '/login') return '/login';
-    return '/';
+    if (pathname === '/sim') return '/sim';
+    return '/charts';
 }
 
 function normalizeCandleData(rawData) {
@@ -252,6 +255,8 @@ function App() {
     const [replayStartDate, setReplayStartDate] = useState('');
     const [tradeCode, setTradeCode] = useState('');
     const [tradeQty, setTradeQty] = useState(1);
+    const [tradeOrderType, setTradeOrderType] = useState('MARKET');
+    const [tradeLimitPrice, setTradeLimitPrice] = useState('');
     const [holdingOrderQtys, setHoldingOrderQtys] = useState({});
     const [tradeMessage, setTradeMessage] = useState('');
     const [applied, setApplied] = useState({
@@ -274,8 +279,15 @@ function App() {
     }, [applied.codes, isNarrowScreen]);
     const chartCodes = useMemo(() => normalizeCodes(applied.codes), [applied.codes]);
     const chartEndDate = useMemo(() => portfolio?.valuationDate || replayState?.currentDate || null, [portfolio, replayState]);
+    const tradeableCodes = useMemo(() => {
+        if (chartCodes.length > 0) return chartCodes;
+        if (watchlistCodes.length > 0) return watchlistCodes;
+        return STOCK_OPTIONS.map((item) => item.code);
+    }, [chartCodes, watchlistCodes]);
     const isLoggedIn = authToken.trim().length > 0;
     const authPage = currentPath === '/signup' ? 'signup' : 'login';
+    const isAuthRoute = currentPath === '/login' || currentPath === '/signup';
+    const mainPage = currentPath === '/sim' ? 'sim' : 'charts';
 
     useEffect(() => {
         const handleResize = () => setIsNarrowScreen(window.innerWidth < 1024);
@@ -313,14 +325,14 @@ function App() {
     }, [authToken, isLoggedIn]);
 
     useEffect(() => {
-        if (isLoggedIn && currentPath !== '/') {
-            navigateTo('/', true);
+        if (isLoggedIn && isAuthRoute) {
+            navigateTo('/charts', true);
             return;
         }
-        if (!isLoggedIn && currentPath === '/') {
+        if (!isLoggedIn && !isAuthRoute) {
             navigateTo('/login', true);
         }
-    }, [isLoggedIn, currentPath, navigateTo]);
+    }, [isLoggedIn, isAuthRoute, navigateTo]);
 
     const clearSessionState = useCallback(() => {
         setCurrentUser(null);
@@ -498,9 +510,7 @@ function App() {
 
     useEffect(() => {
         if (!replayStartDate) {
-            const d = new Date();
-            d.setMonth(d.getMonth() - 1);
-            setReplayStartDate(d.toISOString().slice(0, 10));
+            setReplayStartDate(DEFAULT_REPLAY_START_DATE);
         }
     }, [replayStartDate]);
 
@@ -512,6 +522,9 @@ function App() {
         try {
             const res = await axios.get(`${API_BASE_URL}/api/sim/replay/state`);
             setReplayState(res.data);
+            if (res.data?.anchorDate) {
+                setReplayStartDate(res.data.anchorDate);
+            }
             if (res.data?.portfolio) {
                 setPortfolio(res.data.portfolio);
             }
@@ -536,14 +549,14 @@ function App() {
     }, [replayState?.running, loadReplayState]);
 
     useEffect(() => {
-        if (chartCodes.length === 0) {
+        if (tradeableCodes.length === 0) {
             setTradeCode('');
             return;
         }
-        if (!tradeCode || !chartCodes.includes(tradeCode)) {
-            setTradeCode(chartCodes[0]);
+        if (!tradeCode || !tradeableCodes.includes(tradeCode)) {
+            setTradeCode(tradeableCodes[0]);
         }
-    }, [chartCodes, tradeCode]);
+    }, [tradeableCodes, tradeCode]);
 
     useEffect(() => {
         if (!portfolio?.holdings) return;
@@ -651,6 +664,8 @@ function App() {
         }
         const targetCode = overrides.code ?? tradeCode;
         const targetQtyInput = overrides.quantity ?? tradeQty;
+        const targetOrderType = (overrides.orderType ?? tradeOrderType ?? 'MARKET').toUpperCase();
+        const targetLimitPriceInput = overrides.limitPrice ?? tradeLimitPrice;
 
         if (!targetCode) {
             setTradeMessage('주문할 종목을 먼저 선택해 주세요.');
@@ -662,14 +677,26 @@ function App() {
             return;
         }
 
+        let limitPrice = null;
+        if (targetOrderType === 'LIMIT') {
+            limitPrice = Number(targetLimitPriceInput);
+            if (!Number.isFinite(limitPrice) || limitPrice <= 0) {
+                setTradeMessage('지정가 주문은 유효한 지정가를 입력해 주세요.');
+                return;
+            }
+        }
+
         setSimLoading(true);
         try {
             const res = await axios.post(`${API_BASE_URL}/api/sim/order`, {
                 code: targetCode,
                 side,
+                orderType: targetOrderType,
+                limitPrice,
                 quantity: qty,
             });
-            setTradeMessage(`${side === 'BUY' ? '매수' : '매도'} 체결: ${res.data.code} ${res.data.quantity}주 @ ${res.data.price}`);
+            const orderTypeLabel = res.data.orderType === 'LIMIT' ? '지정가' : '시장가';
+            setTradeMessage(`${orderTypeLabel} ${side === 'BUY' ? '매수' : '매도'} 체결: ${res.data.code} ${res.data.quantity}주 @ ${res.data.price}`);
             setPortfolio((prev) => {
                 if (!prev) return prev;
                 return {
@@ -703,9 +730,9 @@ function App() {
                 if (!prev) return prev;
                 return {
                     ...prev,
-                    cash: 10000000,
+                    cash: INITIAL_CASH,
                     marketValue: 0,
-                    totalValue: 10000000,
+                    totalValue: INITIAL_CASH,
                     realizedPnl: 0,
                     unrealizedPnl: 0,
                     holdings: [],
@@ -955,6 +982,47 @@ function App() {
             <div
                 style={{
                     marginBottom: '20px',
+                    display: 'flex',
+                    gap: '8px',
+                }}
+            >
+                <button
+                    type="button"
+                    onClick={() => navigateTo('/charts')}
+                    style={{
+                        padding: '10px 14px',
+                        borderRadius: '8px',
+                        border: mainPage === 'charts' ? 'none' : '1px solid #cfd8dc',
+                        backgroundColor: mainPage === 'charts' ? '#1e88e5' : '#fff',
+                        color: mainPage === 'charts' ? '#fff' : '#455a64',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                    }}
+                >
+                    차트 페이지
+                </button>
+                <button
+                    type="button"
+                    onClick={() => navigateTo('/sim')}
+                    style={{
+                        padding: '10px 14px',
+                        borderRadius: '8px',
+                        border: mainPage === 'sim' ? 'none' : '1px solid #cfd8dc',
+                        backgroundColor: mainPage === 'sim' ? '#3949ab' : '#fff',
+                        color: mainPage === 'sim' ? '#fff' : '#455a64',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                    }}
+                >
+                    모의투자 페이지
+                </button>
+            </div>
+
+            {mainPage === 'charts' && (
+                <>
+            <div
+                style={{
+                    marginBottom: '20px',
                     padding: '15px',
                     backgroundColor: '#fff',
                     borderRadius: '8px',
@@ -1165,7 +1233,10 @@ function App() {
                     조회 종목을 추가하면 차트가 표시됩니다.
                 </div>
             )}
+                </>
+            )}
 
+            {mainPage === 'sim' && (
             <div
                 style={{
                     marginTop: '20px',
@@ -1186,7 +1257,7 @@ function App() {
                         type="date"
                         value={replayStartDate}
                         onChange={(e) => setReplayStartDate(e.target.value)}
-                        disabled={replayLoading || !isLoggedIn}
+                        disabled={replayLoading || !isLoggedIn || !!replayState?.anchorDate}
                         style={{ padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
                     />
                     <button
@@ -1208,16 +1279,21 @@ function App() {
                     <span style={{ color: '#555' }}>
                         상태: {replayState?.running ? '진행중' : '정지'} / 기준일: {portfolio?.valuationDate || replayState?.currentDate || '-'}
                     </span>
+                    {replayState?.anchorDate && (
+                        <span style={{ color: '#555' }}>
+                            시작 고정일: {replayState.anchorDate}
+                        </span>
+                    )}
                 </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
                     <label>종목:</label>
                     <select
                         value={tradeCode}
                         onChange={(e) => setTradeCode(e.target.value)}
-                        disabled={simLoading || chartCodes.length === 0 || !isLoggedIn}
+                        disabled={simLoading || tradeableCodes.length === 0 || !isLoggedIn}
                         style={{ padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
                     >
-                        {chartCodes.map((code) => (
+                        {tradeableCodes.map((code) => (
                             <option key={code} value={code}>
                                 {getStockNameByCode(code)} ({code})
                             </option>
@@ -1232,6 +1308,29 @@ function App() {
                         disabled={simLoading || !isLoggedIn}
                         style={{ width: '100px', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
                     />
+                    <label>주문유형:</label>
+                    <select
+                        value={tradeOrderType}
+                        onChange={(e) => setTradeOrderType(e.target.value)}
+                        disabled={simLoading || !isLoggedIn}
+                        style={{ padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
+                    >
+                        <option value="MARKET">시장가</option>
+                        <option value="LIMIT">지정가</option>
+                    </select>
+                    {tradeOrderType === 'LIMIT' && (
+                        <>
+                            <label>지정가:</label>
+                            <input
+                                type="number"
+                                min="1"
+                                value={tradeLimitPrice}
+                                onChange={(e) => setTradeLimitPrice(e.target.value)}
+                                disabled={simLoading || !isLoggedIn}
+                                style={{ width: '120px', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
+                            />
+                        </>
+                    )}
                     <button
                         type="button"
                         onClick={() => submitOrder('BUY')}
@@ -1300,7 +1399,7 @@ function App() {
                                             const qty = getHoldingOrderQty(h.code);
                                             setTradeCode(h.code);
                                             setTradeQty(qty);
-                                            submitOrder('BUY', { code: h.code, quantity: qty });
+                                            submitOrder('BUY', { code: h.code, quantity: qty, orderType: 'MARKET', limitPrice: null });
                                         }}
                                     >
                                         매수
@@ -1313,7 +1412,7 @@ function App() {
                                             const qty = Math.min(getHoldingOrderQty(h.code), Math.max(1, Number(h.quantity) || 1));
                                             setTradeCode(h.code);
                                             setTradeQty(qty);
-                                            submitOrder('SELL', { code: h.code, quantity: qty });
+                                            submitOrder('SELL', { code: h.code, quantity: qty, orderType: 'MARKET', limitPrice: null });
                                         }}
                                     >
                                         매도
@@ -1324,6 +1423,7 @@ function App() {
                     </div>
                 )}
             </div>
+            )}
 
             <footer style={{ marginTop: '20px', fontSize: '13px', color: '#888', textAlign: 'center' }}>
                 Backend: Spring Boot (8080) | Frontend: React (3000)

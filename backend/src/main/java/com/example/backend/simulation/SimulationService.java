@@ -16,9 +16,10 @@ import java.util.concurrent.TimeUnit;
 
 @Service
 public class SimulationService {
-    private static final double INITIAL_CASH = 10_000_000;
+    private static final double INITIAL_CASH = 50_000_000;
     private static final int REPLAY_TICK_SECONDS = 60;
     private static final int REPLAY_STEP_DAYS = 1;
+    private static final LocalDate DEFAULT_REPLAY_START_DATE = LocalDate.of(2025, 1, 1);
 
     private final StockService stockService;
     private final SimAccountRepository simAccountRepository;
@@ -93,7 +94,7 @@ public class SimulationService {
     }
 
     @Transactional
-    public synchronized SimOrderResponseDto placeMarketOrder(Long userId, SimOrderRequestDto request) {
+    public synchronized SimOrderResponseDto placeOrder(Long userId, SimOrderRequestDto request) {
         validateUserId(userId);
         if (request == null) {
             throw new IllegalArgumentException("주문 요청이 비어 있습니다.");
@@ -101,7 +102,9 @@ public class SimulationService {
 
         String code = normalizeCode(request.getCode());
         String side = normalizeSide(request.getSide());
+        String orderType = normalizeOrderType(request.getOrderType());
         int qty = request.getQuantity();
+        Double limitPrice = normalizeLimitPrice(request.getLimitPrice(), orderType);
 
         if (qty <= 0) {
             throw new IllegalArgumentException("수량은 1 이상이어야 합니다.");
@@ -112,6 +115,7 @@ public class SimulationService {
         LocalDate valuationDate = replayState.getReplayDate() == null ? LocalDate.now() : LocalDate.parse(replayState.getReplayDate());
 
         double price = stockService.getClosePriceOnOrBefore(code, valuationDate);
+        validateExecutableByOrderType(side, orderType, price, limitPrice);
         double amount = price * qty;
         long tradeAt = System.currentTimeMillis();
 
@@ -158,6 +162,8 @@ public class SimulationService {
         return new SimOrderResponseDto(
                 code,
                 side,
+                orderType,
+                limitPrice,
                 qty,
                 round2(price),
                 round2(amount),
@@ -169,19 +175,16 @@ public class SimulationService {
     @Transactional
     public synchronized PortfolioResponseDto startReplay(Long userId, String startDate) {
         validateUserId(userId);
-        LocalDate date;
-        if (startDate == null || startDate.isBlank()) {
-            date = LocalDate.now().minusMonths(1);
-        } else {
-            try {
-                date = LocalDate.parse(startDate.trim());
-            } catch (Exception e) {
-                throw new IllegalArgumentException("startDate는 yyyy-MM-dd 형식이어야 합니다.");
-            }
-        }
-
         SimReplayStateEntity replayState = getOrCreateReplayState(userId);
-        replayState.setReplayDate(date.toString());
+        String anchorDate = replayState.getAnchorDate();
+        if (anchorDate == null || anchorDate.isBlank()) {
+            LocalDate date = parseStartDateOrDefault(startDate);
+            anchorDate = date.toString();
+            replayState.setAnchorDate(anchorDate);
+            replayState.setReplayDate(anchorDate);
+        } else if (replayState.getReplayDate() == null || replayState.getReplayDate().isBlank()) {
+            replayState.setReplayDate(anchorDate);
+        }
         replayState.setRunning(true);
         simReplayStateRepository.save(replayState);
 
@@ -204,6 +207,7 @@ public class SimulationService {
         PortfolioResponseDto portfolio = getPortfolio(userId);
         return new ReplayStateDto(
                 portfolio.getValuationDate(),
+                replayState.getAnchorDate(),
                 replayState.isRunning(),
                 REPLAY_STEP_DAYS,
                 REPLAY_TICK_SECONDS,
@@ -223,6 +227,7 @@ public class SimulationService {
 
         SimReplayStateEntity replayState = getOrCreateReplayState(userId);
         replayState.setReplayDate(null);
+        replayState.setAnchorDate(null);
         replayState.setRunning(false);
         simReplayStateRepository.save(replayState);
     }
@@ -279,6 +284,50 @@ public class SimulationService {
             throw new IllegalArgumentException("side는 BUY 또는 SELL만 가능합니다.");
         }
         return normalized;
+    }
+
+    private String normalizeOrderType(String orderType) {
+        if (orderType == null || orderType.isBlank()) {
+            return "MARKET";
+        }
+        String normalized = orderType.trim().toUpperCase();
+        if (!"MARKET".equals(normalized) && !"LIMIT".equals(normalized)) {
+            throw new IllegalArgumentException("orderType은 MARKET 또는 LIMIT만 가능합니다.");
+        }
+        return normalized;
+    }
+
+    private Double normalizeLimitPrice(Double limitPrice, String orderType) {
+        if (!"LIMIT".equals(orderType)) {
+            return null;
+        }
+        if (limitPrice == null || !Double.isFinite(limitPrice) || limitPrice <= 0) {
+            throw new IllegalArgumentException("지정가 주문은 limitPrice(0 초과)가 필요합니다.");
+        }
+        return round2(limitPrice);
+    }
+
+    private void validateExecutableByOrderType(String side, String orderType, double marketPrice, Double limitPrice) {
+        if (!"LIMIT".equals(orderType)) {
+            return;
+        }
+        if ("BUY".equals(side) && marketPrice > limitPrice) {
+            throw new IllegalArgumentException("지정가 미체결: 현재가가 지정가보다 높습니다.");
+        }
+        if ("SELL".equals(side) && marketPrice < limitPrice) {
+            throw new IllegalArgumentException("지정가 미체결: 현재가가 지정가보다 낮습니다.");
+        }
+    }
+
+    private LocalDate parseStartDateOrDefault(String startDate) {
+        if (startDate == null || startDate.isBlank()) {
+            return DEFAULT_REPLAY_START_DATE;
+        }
+        try {
+            return LocalDate.parse(startDate.trim());
+        } catch (Exception e) {
+            throw new IllegalArgumentException("startDate는 yyyy-MM-dd 형식이어야 합니다.");
+        }
     }
 
     private double round2(double value) {

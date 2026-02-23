@@ -24,6 +24,9 @@ public class SimReplayStateEntity {
     @Column
     private String replayDate;
 
+    @Column
+    private String anchorDate;
+
     @Column(nullable = false)
     private boolean running;
 
@@ -49,6 +52,14 @@ public class SimReplayStateEntity {
 
     public void setReplayDate(String replayDate) {
         this.replayDate = replayDate;
+    }
+
+    public String getAnchorDate() {
+        return anchorDate;
+    }
+
+    public void setAnchorDate(String anchorDate) {
+        this.anchorDate = anchorDate;
     }
 
     public boolean isRunning() {
