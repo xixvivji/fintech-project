@@ -1,4 +1,4 @@
-package com.example.backend;
+package com.example.backend.watchlist;
 
 public class WatchlistItemDto {
     private String code;

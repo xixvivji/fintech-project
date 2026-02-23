@@ -1,7 +1,5 @@
-package com.example.backend;
+package com.example.backend.stock;
 
-import com.example.backend.ChartDataDto;
-import com.example.backend.StockService;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
 

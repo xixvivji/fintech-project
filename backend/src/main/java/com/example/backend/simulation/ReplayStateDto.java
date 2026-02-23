@@ -1,4 +1,4 @@
-package com.example.backend;
+package com.example.backend.simulation;
 
 public class ReplayStateDto {
     private String currentDate;

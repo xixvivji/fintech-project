@@ -1,4 +1,4 @@
-package com.example.backend;
+package com.example.backend.stock;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;

@@ -1,4 +1,4 @@
-package com.example.backend;
+package com.example.backend.simulation;
 
 public class HoldingDto {
     private String code;
