@@ -81,6 +81,12 @@ function readStoredToken() {
     }
 }
 
+function normalizeAuthPath(pathname) {
+    if (pathname === '/signup') return '/signup';
+    if (pathname === '/login') return '/login';
+    return '/';
+}
+
 function normalizeCandleData(rawData) {
     if (!Array.isArray(rawData)) return [];
 
@@ -223,7 +229,7 @@ function StockChartCard({ code, months, requestDelayMs, endDate }) {
 
 function App() {
     const [authToken, setAuthToken] = useState(readStoredToken);
-    const [authPage, setAuthPage] = useState('login');
+    const [currentPath, setCurrentPath] = useState(() => normalizeAuthPath(window.location.pathname));
     const [loginName, setLoginName] = useState('');
     const [loginPassword, setLoginPassword] = useState('');
     const [signupName, setSignupName] = useState('');
@@ -269,11 +275,33 @@ function App() {
     const chartCodes = useMemo(() => normalizeCodes(applied.codes), [applied.codes]);
     const chartEndDate = useMemo(() => portfolio?.valuationDate || replayState?.currentDate || null, [portfolio, replayState]);
     const isLoggedIn = authToken.trim().length > 0;
+    const authPage = currentPath === '/signup' ? 'signup' : 'login';
 
     useEffect(() => {
         const handleResize = () => setIsNarrowScreen(window.innerWidth < 1024);
         window.addEventListener('resize', handleResize);
         return () => window.removeEventListener('resize', handleResize);
+    }, []);
+
+    useEffect(() => {
+        const onPopState = () => setCurrentPath(normalizeAuthPath(window.location.pathname));
+        window.addEventListener('popstate', onPopState);
+        return () => window.removeEventListener('popstate', onPopState);
+    }, []);
+
+    const navigateTo = useCallback((path, replace = false) => {
+        const next = normalizeAuthPath(path);
+        const current = normalizeAuthPath(window.location.pathname);
+        if (current === next) {
+            setCurrentPath(next);
+            return;
+        }
+        if (replace) {
+            window.history.replaceState({}, '', next);
+        } else {
+            window.history.pushState({}, '', next);
+        }
+        setCurrentPath(next);
     }, []);
 
     useEffect(() => {
@@ -283,6 +311,16 @@ function App() {
             delete axios.defaults.headers.common.Authorization;
         }
     }, [authToken, isLoggedIn]);
+
+    useEffect(() => {
+        if (isLoggedIn && currentPath !== '/') {
+            navigateTo('/', true);
+            return;
+        }
+        if (!isLoggedIn && currentPath === '/') {
+            navigateTo('/login', true);
+        }
+    }, [isLoggedIn, currentPath, navigateTo]);
 
     const clearSessionState = useCallback(() => {
         setCurrentUser(null);
@@ -302,7 +340,7 @@ function App() {
             const serverMessage = err?.response?.data?.message;
             setCurrentUser(null);
             setAuthToken('');
-            setAuthPage('login');
+            navigateTo('/login', true);
             try {
                 localStorage.removeItem(AUTH_TOKEN_KEY);
             } catch (e) {
@@ -315,7 +353,7 @@ function App() {
                 setAuthMessage('로그인 세션이 만료되었습니다. 다시 로그인해 주세요.');
             }
         }
-    }, [clearSessionState, isLoggedIn]);
+    }, [clearSessionState, isLoggedIn, navigateTo]);
 
     useEffect(() => {
         if (!isLoggedIn) {
@@ -336,7 +374,7 @@ function App() {
         try {
             await axios.post(`${API_BASE_URL}/api/auth/signup`, { name, password });
             setAuthMessage('회원가입 완료. 로그인 페이지로 이동합니다.');
-            setAuthPage('login');
+            navigateTo('/login');
             setLoginName(name);
             setSignupPassword('');
         } catch (err) {
@@ -389,7 +427,7 @@ function App() {
 
     const handleLogout = () => {
         setAuthToken('');
-        setAuthPage('login');
+        navigateTo('/login');
         try {
             localStorage.removeItem(AUTH_TOKEN_KEY);
         } catch (e) {
@@ -765,7 +803,7 @@ function App() {
                     <div style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}>
                         <button
                             type="button"
-                            onClick={() => setAuthPage('login')}
+                            onClick={() => navigateTo('/login')}
                             style={{
                                 flex: 1,
                                 padding: '10px',
@@ -781,7 +819,7 @@ function App() {
                         </button>
                         <button
                             type="button"
-                            onClick={() => setAuthPage('signup')}
+                            onClick={() => navigateTo('/signup')}
                             style={{
                                 flex: 1,
                                 padding: '10px',
