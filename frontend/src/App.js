@@ -1,6 +1,7 @@
 import React, { useMemo, useEffect, useRef, useState, useCallback } from 'react';
 import { createChart } from 'lightweight-charts';
 import axios from 'axios';
+import './App.css';
 
 const PERIOD_OPTIONS = [
     { label: '6개월', value: 6 },
@@ -59,7 +60,7 @@ function mapServerErrorMessage(message) {
         return '토큰 발급 제한에 걸렸습니다. 잠시 후(약 1분) 다시 시도해 주세요.';
     }
     if (message.includes('EGW00201')) {
-        return '요청이 너무 빠릅니다. 조회 속도를 자동으로 조절 중이니 잠시 후 다시 시도해 주세요.';
+        return '요청이 너무 빈번합니다. 조회 속도를 자동으로 조절 중이니 잠시 후 다시 시도해 주세요.';
     }
     if (message.includes('output2 없음')) {
         return '해당 기간에 조회 가능한 데이터가 없습니다.';
@@ -204,7 +205,7 @@ function StockChartCard({ code, months, requestDelayMs, endDate }) {
                 <strong>{code}</strong>
                 <span style={{ color: '#666', fontSize: '13px' }}>{months}개월</span>
             </div>
-            {loading && <div style={{ marginBottom: '8px', color: '#ef5350' }}>데이터 동기화 중...</div>}
+            {loading && <div style={{ marginBottom: '8px', color: '#ef5350' }}>데이터 불러오는 중...</div>}
             {error && <div style={{ marginBottom: '8px', color: '#d32f2f' }}>{error}</div>}
             <div ref={chartContainerRef} style={{ minHeight: '360px' }} />
         </div>
@@ -227,6 +228,7 @@ function App() {
     const [replayStartDate, setReplayStartDate] = useState('');
     const [tradeCode, setTradeCode] = useState('');
     const [tradeQty, setTradeQty] = useState(1);
+    const [holdingOrderQtys, setHoldingOrderQtys] = useState({});
     const [tradeMessage, setTradeMessage] = useState('');
     const [applied, setApplied] = useState({
         codes: [],
@@ -351,6 +353,26 @@ function App() {
         }
     }, [chartCodes, tradeCode]);
 
+    useEffect(() => {
+        if (!portfolio?.holdings) return;
+        setHoldingOrderQtys((prev) => {
+            const next = { ...prev };
+            const validCodes = new Set();
+            for (const h of portfolio.holdings) {
+                validCodes.add(h.code);
+                if (!next[h.code]) {
+                    next[h.code] = 1;
+                }
+            }
+            Object.keys(next).forEach((code) => {
+                if (!validCodes.has(code)) {
+                    delete next[code];
+                }
+            });
+            return next;
+        });
+    }, [portfolio?.holdings]);
+
     const applyFilter = () => {
         const now = Date.now();
         if (now - lastApplyAt < APPLY_DEBOUNCE_MS) return;
@@ -359,7 +381,7 @@ function App() {
         const normalizedSelected = normalizeCodes(viewCodes);
         const limitedCodes = normalizedSelected.slice(0, MAX_ACTIVE_CHARTS);
         if (normalizedSelected.length > MAX_ACTIVE_CHARTS) {
-            setUiMessage(`동시 조회는 최대 ${MAX_ACTIVE_CHARTS}종목까지 가능합니다. 앞의 ${MAX_ACTIVE_CHARTS}종목만 적용합니다.`);
+            setUiMessage(`동시 조회는 최대 ${MAX_ACTIVE_CHARTS}종목까지 가능합니다. 앞의 ${MAX_ACTIVE_CHARTS}종목만 적용됩니다.`);
         } else {
             setUiMessage('');
         }
@@ -415,7 +437,7 @@ function App() {
             setUiMessage('');
         } catch (err) {
             const serverMessage = err?.response?.data?.message;
-            const action = inWatchlist ? '삭제' : '추가';
+            const action = inWatchlist ? '해제' : '추가';
             if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
                 setUiMessage(`관심종목 ${action} 실패: ${serverMessage}`);
             } else {
@@ -426,21 +448,24 @@ function App() {
         }
     };
 
-    const submitOrder = async (side) => {
-        if (!tradeCode) {
+    const submitOrder = async (side, overrides = {}) => {
+        const targetCode = overrides.code ?? tradeCode;
+        const targetQtyInput = overrides.quantity ?? tradeQty;
+
+        if (!targetCode) {
             setTradeMessage('주문할 종목을 먼저 선택해 주세요.');
             return;
         }
-        const qty = Number(tradeQty);
+        const qty = Number(targetQtyInput);
         if (!Number.isInteger(qty) || qty <= 0) {
-            setTradeMessage('수량은 1 이상의 정수여야 합니다.');
+            setTradeMessage('수량은 1 이상 정수여야 합니다.');
             return;
         }
 
         setSimLoading(true);
         try {
             const res = await axios.post(`${API_BASE_URL}/api/sim/order`, {
-                code: tradeCode,
+                code: targetCode,
                 side,
                 quantity: qty,
             });
@@ -502,7 +527,7 @@ function App() {
                 startDate: replayStartDate,
             });
             await loadReplayState();
-            setTradeMessage('리플레이를 시작했습니다. 1분마다 1일씩 진행됩니다.');
+            setTradeMessage('리플레이를 시작했습니다. 1분마다 1영업일씩 진행됩니다.');
         } catch (err) {
             const serverMessage = err?.response?.data?.message;
             if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
@@ -538,6 +563,11 @@ function App() {
         return value.toLocaleString('ko-KR');
     };
 
+    const getHoldingOrderQty = (code) => {
+        const value = Number(holdingOrderQtys[code]);
+        return Number.isInteger(value) && value > 0 ? value : 1;
+    };
+
     return (
         <div style={{ padding: '20px', fontFamily: 'sans-serif', backgroundColor: '#f9f9f9', minHeight: '100vh' }}>
             <header style={{ marginBottom: '20px' }}>
@@ -560,10 +590,10 @@ function App() {
                     alignItems: 'flex-start',
                 }}
             >
-                {watchlistLoading && <div style={{ color: '#1565c0', fontWeight: 600 }}>관심종목 동기화 중...</div>}
+                {watchlistLoading && <div style={{ color: '#1565c0', fontWeight: 600 }}>관심종목 불러오는 중...</div>}
                 {uiMessage && <div style={{ color: '#c62828', fontWeight: 600 }}>{uiMessage}</div>}
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
-                    <label style={{ fontWeight: 'bold' }}>종목 검색:</label>
+                    <label style={{ fontWeight: 'bold' }}>종목 검색</label>
                     <input
                         type="text"
                         value={searchQuery}
@@ -643,7 +673,7 @@ function App() {
                                         fontWeight: inView ? 700 : 500,
                                     }}
                                 >
-                                    {inView ? '✓ ' : '+ '}
+                                    {inView ? '제거 ' : '+ '}
                                     {stock.name} ({stock.code})
                                 </button>
                                 <button
@@ -660,7 +690,7 @@ function App() {
                                         fontWeight: 700,
                                     }}
                                 >
-                                    {inWatchlist ? '★' : '☆'}
+                                    {inWatchlist ? '해제' : '추가'}
                                 </button>
                             </div>
                         );
@@ -716,7 +746,7 @@ function App() {
                     alignItems: 'center',
                 }}
             >
-                <strong style={{ color: '#333' }}>관심종목:</strong>
+                <strong style={{ color: '#333' }}>관심종목</strong>
                 {watchlistCodes.length === 0 && <span style={{ color: '#666' }}>등록된 관심종목이 없습니다.</span>}
                 {watchlistCodes.map((code) => (
                     <span
@@ -775,7 +805,7 @@ function App() {
             >
                 <h3 style={{ margin: 0 }}>모의투자</h3>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
-                    <label>리플레이 시작일:</label>
+                    <label>리플레이 시작일</label>
                     <input
                         type="date"
                         value={replayStartDate}
@@ -858,8 +888,63 @@ function App() {
                     </div>
                 )}
                 {portfolio?.holdings?.length > 0 && (
-                    <div style={{ fontSize: '13px', color: '#444' }}>
-                        보유: {portfolio.holdings.map((h) => `${h.code} ${h.quantity}주(평단 ${fmt(h.avgPrice)})`).join(' / ')}
+                    <div className="sim-holdings-list">
+                        <div className="sim-holdings-title">보유 종목</div>
+                        {portfolio.holdings.map((h) => (
+                            <div key={`${h.code}-${h.quantity}-${h.avgPrice}`} className="sim-holding-row">
+                                <div className="sim-holding-main">
+                                    <div className="sim-holding-code">
+                                        {getStockNameByCode(h.code)} ({h.code})
+                                    </div>
+                                    <div className="sim-holding-meta">
+                                        {h.quantity}주 보유 · 평단 {fmt(h.avgPrice)}원
+                                    </div>
+                                </div>
+                                <div className="sim-holding-actions">
+                                    <input
+                                        type="number"
+                                        min="1"
+                                        max={Math.max(1, Number(h.quantity) || 1)}
+                                        className="sim-holding-qty-input"
+                                        value={holdingOrderQtys[h.code] ?? 1}
+                                        disabled={simLoading}
+                                        onChange={(e) => {
+                                            const raw = e.target.value;
+                                            setHoldingOrderQtys((prev) => ({
+                                                ...prev,
+                                                [h.code]: raw,
+                                            }));
+                                        }}
+                                    />
+                                    <button
+                                        type="button"
+                                        className="sim-holding-buy-btn"
+                                        disabled={simLoading}
+                                        onClick={() => {
+                                            const qty = getHoldingOrderQty(h.code);
+                                            setTradeCode(h.code);
+                                            setTradeQty(qty);
+                                            submitOrder('BUY', { code: h.code, quantity: qty });
+                                        }}
+                                    >
+                                        매수
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="sim-holding-sell-btn"
+                                        disabled={simLoading}
+                                        onClick={() => {
+                                            const qty = Math.min(getHoldingOrderQty(h.code), Math.max(1, Number(h.quantity) || 1));
+                                            setTradeCode(h.code);
+                                            setTradeQty(qty);
+                                            submitOrder('SELL', { code: h.code, quantity: qty });
+                                        }}
+                                    >
+                                        매도
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
                     </div>
                 )}
             </div>
@@ -872,3 +957,5 @@ function App() {
 }
 
 export default App;
+
+

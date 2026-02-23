@@ -1,38 +1,437 @@
-.App {
-  text-align: center;
+﻿ :root {
+  --sim-surface: #ffffff;
+  --sim-panel-bg: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+  --sim-border: #dbe6f2;
+  --sim-shadow: 0 14px 38px rgba(15, 23, 42, 0.08);
+  --sim-text: #10233d;
+  --sim-muted: #5f738c;
+  --sim-accent: #1d4ed8;
+  --sim-accent-soft: #dbeafe;
+  --sim-buy: #d92d20;
+  --sim-buy-soft: #ffe8e5;
+  --sim-sell: #0f766e;
+  --sim-sell-soft: #ddfbf5;
 }
 
-.App-logo {
-  height: 40vmin;
+body {
+  background:
+    radial-gradient(circle at 8% 8%, rgba(29, 78, 216, 0.10), transparent 42%),
+    radial-gradient(circle at 92% 12%, rgba(14, 165, 233, 0.10), transparent 38%),
+    #f3f7fb;
+}
+
+/* Mock-investing panel: the only section in App that contains an h3 */
+div[style*='flex-direction: column']:has(> h3) {
+  position: relative;
+  overflow: hidden;
+  padding: 18px !important;
+  border-radius: 16px !important;
+  border: 1px solid var(--sim-border);
+  background: var(--sim-panel-bg) !important;
+  box-shadow: var(--sim-shadow) !important;
+  gap: 14px !important;
+}
+
+div[style*='flex-direction: column']:has(> h3)::before {
+  content: '';
+  position: absolute;
+  inset: -20% auto auto -10%;
+  width: 220px;
+  height: 220px;
+  background: radial-gradient(circle, rgba(37, 99, 235, 0.14), transparent 70%);
   pointer-events: none;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .App-logo {
-    animation: App-logo-spin infinite 20s linear;
+div[style*='flex-direction: column']:has(> h3) > h3 {
+  margin: 0 !important;
+  color: var(--sim-text);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+div[style*='flex-direction: column']:has(> h3) > h3::after {
+  content: ' 리플레이/주문 컨트롤';
+  display: inline-block;
+  margin-left: 10px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--sim-accent-soft);
+  color: var(--sim-accent);
+  font-size: 11px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+/* top control row: replay */
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(1),
+/* second control row: trade */
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) {
+  position: relative;
+  display: grid !important;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 10px !important;
+  align-items: center !important;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(4px);
+}
+
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(1) > label,
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > label {
+  color: var(--sim-muted);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+div[style*='flex-direction: column']:has(> h3) input,
+div[style*='flex-direction: column']:has(> h3) select {
+  height: 38px;
+  padding: 0 12px !important;
+  border-radius: 10px !important;
+  border: 1px solid #cfd9e5 !important;
+  background: #fff;
+  color: #11243f;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.7);
+}
+
+div[style*='flex-direction: column']:has(> h3) input:focus,
+div[style*='flex-direction: column']:has(> h3) select:focus {
+  outline: 2px solid rgba(29, 78, 216, 0.2);
+  outline-offset: 1px;
+  border-color: #93c5fd !important;
+}
+
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(1) > input[type='date'] {
+  min-width: 170px;
+}
+
+div[style*='flex-direction: column']:has(> h3) button {
+  height: 38px;
+  border-radius: 10px !important;
+  font-weight: 700;
+  transition: transform 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+}
+
+div[style*='flex-direction: column']:has(> h3) button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+div[style*='flex-direction: column']:has(> h3) button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed !important;
+}
+
+/* Replay buttons */
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(1) > button:nth-of-type(1) {
+  background: linear-gradient(135deg, #1d4ed8, #2563eb) !important;
+  color: #fff !important;
+}
+
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(1) > button:nth-of-type(2) {
+  border-color: #cbd5e1 !important;
+  background: #fff !important;
+  color: #334155;
+}
+
+/* Trade action buttons */
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > button:nth-of-type(1) {
+  background: linear-gradient(135deg, #dc2626, #ef4444) !important;
+  color: #fff !important;
+}
+
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > button:nth-of-type(2) {
+  background: linear-gradient(135deg, #0f766e, #14b8a6) !important;
+  color: #fff !important;
+}
+
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > button:nth-of-type(3) {
+  background: #fff !important;
+  border-color: #cbd5e1 !important;
+  color: #334155;
+}
+
+/* status / message rows */
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(1) > span {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #eff6ff;
+  color: #1e3a8a !important;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(1) > span::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2563eb;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.16);
+  flex: 0 0 auto;
+}
+
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(3) {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px dashed #d7e0ea;
+  color: #334155 !important;
+  font-size: 13px;
+}
+
+/* portfolio summary line */
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(4) {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  font-size: 0 !important;
+  color: inherit !important;
+}
+
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(4)::before {
+  content: attr(data-sim-summary-fallback);
+  display: none;
+}
+
+/* Hide original summary text visually, preserve layout replacement */
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(4) {
+  position: relative;
+  min-height: 78px;
+}
+
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(4)::after {
+  content: '포트폴리오 요약은 아래 카드 스타일로 정리되었습니다.';
+  display: none;
+}
+
+/* Holdings row */
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(5) {
+  padding: 12px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  color: #334155 !important;
+  line-height: 1.6;
+}
+
+/* Convert summary text line into chip-like blocks by styling spans around separators is impossible,
+   so instead make the line itself stand out and readable. */
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(4) {
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background:
+    linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9);
+  color: #0f172a !important;
+  font-size: 14px !important;
+  line-height: 1.65;
+  word-break: keep-all;
+}
+
+/* Layout tuning for direct children in replay row */
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(1) > label:nth-of-type(1) { grid-column: span 2; }
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(1) > input { grid-column: span 3; }
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(1) > button { grid-column: span 2; }
+
+/* Layout tuning for trade row */
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > label:nth-of-type(1) { grid-column: span 1; }
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > select { grid-column: span 4; }
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > label:nth-of-type(2) { grid-column: span 1; }
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > input { grid-column: span 2; width: 100% !important; }
+div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > button { grid-column: span 1; }
+
+@media (max-width: 1024px) {
+  div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(4) {
+    font-size: 13px !important;
   }
 }
 
-.App-header {
-  background-color: #282c34;
-  min-height: 100vh;
+@media (max-width: 768px) {
+  div[style*='flex-direction: column']:has(> h3) {
+    padding: 14px !important;
+    border-radius: 14px !important;
+  }
+
+  div[style*='flex-direction: column']:has(> h3) > h3 {
+    font-size: 20px;
+  }
+
+  div[style*='flex-direction: column']:has(> h3) > h3::after {
+    display: block;
+    width: fit-content;
+    margin: 8px 0 0;
+  }
+
+  div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(1),
+  div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(1) > label:nth-of-type(1),
+  div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(1) > input,
+  div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(1) > button,
+  div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > label,
+  div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > select,
+  div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > input,
+  div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > button {
+    grid-column: span 3;
+  }
+
+  div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > select {
+    grid-column: 1 / -1;
+  }
+
+  div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(4),
+  div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(5) {
+    padding: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  div[style*='flex-direction: column']:has(> h3) button {
+    transition: none;
+  }
+}
+
+.sim-holdings-list {
   display: flex;
   flex-direction: column;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.sim-holdings-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: #4b5f78;
+  letter-spacing: 0.03em;
+}
+
+.sim-holding-row {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  font-size: calc(10px + 2vmin);
-  color: white;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid #dbe7f3;
+  background: linear-gradient(180deg, #fff 0%, #f8fbff 100%);
 }
 
-.App-link {
-  color: #61dafb;
+.sim-holding-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-@keyframes App-logo-spin {
-  from {
-    transform: rotate(0deg);
+.sim-holding-code {
+  color: #13253f;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.sim-holding-meta {
+  color: #5d718a;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.sim-holding-sell-btn {
+  flex: 0 0 auto;
+  height: 34px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #0f766e, #14b8a6);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 6px 14px rgba(15, 118, 110, 0.2);
+}
+
+.sim-holding-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.sim-holding-qty-input {
+  width: 72px;
+  height: 34px;
+  border: 1px solid #cfd9e5;
+  border-radius: 9px;
+  padding: 0 8px;
+  background: #fff;
+  color: #13253f;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sim-holding-qty-input:focus {
+  outline: 2px solid rgba(29, 78, 216, 0.2);
+  outline-offset: 1px;
+  border-color: #93c5fd;
+}
+
+.sim-holding-buy-btn {
+  flex: 0 0 auto;
+  height: 34px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #dc2626, #ef4444);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 6px 14px rgba(220, 38, 38, 0.18);
+}
+
+.sim-holding-sell-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.sim-holding-buy-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+@media (max-width: 640px) {
+  .sim-holding-row {
+    align-items: stretch;
+    flex-direction: column;
   }
-  to {
-    transform: rotate(360deg);
+
+  .sim-holding-actions {
+    width: 100%;
+  }
+
+  .sim-holding-qty-input {
+    flex: 1 1 70px;
+    width: auto;
+  }
+
+  .sim-holding-buy-btn,
+  .sim-holding-sell-btn {
+    flex: 1 1 0;
+    width: 100%;
   }
 }
