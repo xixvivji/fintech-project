@@ -12,6 +12,7 @@ import { STOCK_OPTIONS, getStockNameByCode } from "./constants/stocks";
 
 const API_BASE_URL = "http://localhost:8080";
 const AUTH_TOKEN_KEY = "fintech_access_token";
+const UI_THEME_KEY = "fintech_ui_theme";
 const MAX_ACTIVE_CHARTS = 5;
 
 function readStoredToken() {
@@ -19,6 +20,15 @@ function readStoredToken() {
     return localStorage.getItem(AUTH_TOKEN_KEY) || "";
   } catch {
     return "";
+  }
+}
+
+function readStoredTheme() {
+  try {
+    const v = localStorage.getItem(UI_THEME_KEY);
+    return v === "mint" ? "mint" : "blue";
+  } catch {
+    return "blue";
   }
 }
 
@@ -48,6 +58,7 @@ function parseError(err, fallback) {
 
 export default function App() {
   const [path, setPath] = useState(() => normalizePath(window.location.pathname));
+  const [uiTheme, setUiTheme] = useState(readStoredTheme);
   const [authToken, setAuthToken] = useState(readStoredToken);
   const [currentUser, setCurrentUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(false);
@@ -119,11 +130,23 @@ export default function App() {
     } catch {}
   }, []);
 
+  const persistTheme = useCallback((theme) => {
+    try {
+      localStorage.setItem(UI_THEME_KEY, theme);
+    } catch {}
+  }, []);
+
   const clearSession = useCallback(() => {
     setAuthToken("");
     persistToken("");
     setCurrentUser(null);
   }, [persistToken]);
+
+  const changeTheme = useCallback((nextTheme) => {
+    const normalized = nextTheme === "mint" ? "mint" : "blue";
+    setUiTheme(normalized);
+    persistTheme(normalized);
+  }, [persistTheme]);
 
   const loadMe = useCallback(async () => {
     if (!authToken) return;
@@ -575,12 +598,16 @@ export default function App() {
   const chartCardHeight = chartDisplayMode === "expanded" ? 340 : chartDisplayMode === "compact" ? 220 : 260;
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-theme={uiTheme}>
       <header className="app-header">
         <div className="app-header-brand">
           <div className="app-title">Fintech Mock Investing</div>
           <div className="app-subtitle">차트 조회 + 모의투자 + 랭킹</div>
         </div>        <nav className="app-nav">
+          <div className="app-theme-toggle" role="group" aria-label="Theme preset">
+            <button type="button" className={uiTheme === "blue" ? "app-nav-btn active" : "app-nav-btn"} onClick={() => changeTheme("blue")}>Blue</button>
+            <button type="button" className={uiTheme === "mint" ? "app-nav-btn active" : "app-nav-btn"} onClick={() => changeTheme("mint")}>Mint</button>
+          </div>
           <button type="button" onClick={() => navigateTo("/")} className={path === "/" ? "app-nav-btn active" : "app-nav-btn"}>Home</button>
           <button type="button" onClick={() => navigateTo("/charts")} className={path === "/charts" ? "app-nav-btn active" : "app-nav-btn"}>Charts</button>
           <button type="button" onClick={() => navigateTo("/sim")} className={path === "/sim" ? "app-nav-btn active" : "app-nav-btn"}>Simulation</button>

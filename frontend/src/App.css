@@ -1287,6 +1287,257 @@ div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > button { g
   }
 }
 
+/* ===== Late UI overrides / themes / page classes ===== */
+.app-theme-toggle {
+  display: inline-flex;
+  gap: 6px;
+  margin-right: 4px;
+  padding-right: 6px;
+  border-right: 1px solid #e2e8f0;
+}
+
+.app-shell[data-theme="mint"] {
+  --ui-primary: #0ea5a6;
+  --ui-primary-2: #0f766e;
+}
+
+.app-shell[data-theme="mint"] .home-hero {
+  background: linear-gradient(135deg, #ecfeff 0%, #f0fdfa 55%, #f8fafc 100%);
+  border-color: #bfeee8;
+  box-shadow: 0 16px 34px rgba(15, 118, 110, 0.10);
+}
+
+.app-shell[data-theme="mint"] .home-hero-kicker,
+.app-shell[data-theme="mint"] .home-link-btn {
+  color: #0f766e;
+}
+
+.home-widget-icon {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.app-shell[data-theme="mint"] .home-widget-icon {
+  background: #e6fffb;
+  color: #0f766e;
+}
+
+.home-widget-sparkline {
+  width: 74px;
+  height: 20px;
+  color: #93c5fd;
+  flex: 0 0 auto;
+}
+
+.app-shell[data-theme="mint"] .home-widget-sparkline {
+  color: #5eead4;
+}
+
+.auth-page {
+  min-height: calc(100vh - 120px);
+  padding: 20px;
+}
+
+.auth-page-header {
+  margin-bottom: 18px;
+}
+
+.auth-page-title {
+  margin: 0;
+  font-size: 28px;
+  letter-spacing: -0.02em;
+}
+
+.auth-page-subtitle {
+  color: #64748b;
+  margin-top: 6px;
+}
+
+.auth-card {
+  max-width: 440px;
+  width: 100%;
+  margin: 28px auto;
+  padding: 18px;
+  border-radius: 16px;
+}
+
+.auth-tab-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.auth-tab-btn.active,
+.auth-submit-btn.primary {
+  background: linear-gradient(135deg, var(--ui-primary-2), var(--ui-primary)) !important;
+  color: #fff !important;
+  border-color: transparent !important;
+}
+
+.auth-submit-btn.secondary {
+  background: #fff !important;
+  color: var(--ui-primary) !important;
+  border-color: rgba(37, 99, 235, 0.3) !important;
+}
+
+.auth-form-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.auth-message {
+  margin-top: 12px;
+  color: #b91c1c;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.league-page-card {
+  padding: 16px;
+  border-radius: 16px;
+}
+
+.league-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.league-page-title {
+  margin: 0;
+}
+
+.league-page-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid #dbeafe;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.league-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.league-info-card {
+  padding: 12px;
+}
+
+.league-info-label {
+  color: #64748b;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.league-info-value {
+  font-weight: 800;
+}
+
+.league-page-empty,
+.league-muted {
+  margin: 0;
+  color: #64748b;
+}
+
+.league-top-card {
+  margin-top: 16px;
+  padding: 12px;
+}
+
+.league-top-title {
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.league-top-list {
+  display: grid;
+  gap: 8px;
+}
+
+.league-top-row {
+  display: grid;
+  grid-template-columns: 44px 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.league-rank-no { font-weight: 800; }
+.league-rank-name { font-weight: 600; }
+.league-rank-rate { font-weight: 800; }
+.league-rank-rate.up { color: #dc2626; }
+.league-rank-rate.down { color: #0f766e; }
+.league-rank-total { color: #475569; font-size: 12px; }
+
+.sim-page-wrap {
+  margin-top: 20px;
+  margin-bottom: 20px;
+  padding: 15px;
+}
+
+.sim-page-title {
+  margin-top: 0;
+}
+
+.sim-page-muted {
+  margin: 0;
+  color: #64748b;
+}
+
+.sim-inline-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.sim-inline-row-gap-sm { margin-top: 8px; }
+.sim-inline-row-gap-md { margin-top: 12px; }
+.sim-inline-input-sm { width: 90px; }
+.sim-inline-input-md { width: 120px; }
+.sim-trade-message { margin-top: 10px; color: #334155; }
+.sim-selected-stock-card-gap { margin-top: 12px; }
+.sim-selected-stock-head { display:flex; justify-content:space-between; gap:8px; align-items:center; flex-wrap:wrap; }
+.sim-selected-stock-date { color:#64748b; font-size:12px; }
+.sim-order-tabs-gap { margin-top: 12px; }
+.sim-ranking-note { color:#64748b; font-size:12px; }
+.sim-portfolio-inline-summary { font-size:14px; color:#334155; margin-top:12px; }
+
+@media (max-width: 1024px) {
+  .league-top-row {
+    grid-template-columns: 44px 1fr auto;
+  }
+  .league-rank-total {
+    display: none;
+  }
+  .app-theme-toggle {
+    width: 100%;
+    border-right: none;
+    padding-right: 0;
+    margin-right: 0;
+  }
+}
+
 /* ===== UI Refresh Pass (global controls / cards / header) ===== */
 :root {
   --ui-bg: #f2f6fb;

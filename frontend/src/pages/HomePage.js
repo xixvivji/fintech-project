@@ -154,8 +154,16 @@ export default function HomePage({
 
   const widgetDefs = {
     metrics: {
+      icon: "◈",
       title: "계좌 요약",
       span: "full",
+      sparkline: [
+        cash * 0.9 + totalValue * 0.1,
+        cash * 0.7 + totalValue * 0.3,
+        cash * 0.5 + totalValue * 0.5,
+        totalValue * 0.85,
+        totalValue,
+      ],
       body: (
         <div className="home-grid home-grid-metrics">
           <MetricCard label="공용 기준일" value={leagueState?.currentDate || "-"} tone="neutral" />
@@ -168,8 +176,10 @@ export default function HomePage({
       ),
     },
     movers: {
+      icon: "↕",
       title: "상승/하락 TOP",
       span: "full",
+      sparkline: moversRows.slice(0, 6).map((r) => Number(r.changeRate || 0)),
       body: (
         <div className="home-movers-grid">
           <MoverPanel
@@ -194,8 +204,10 @@ export default function HomePage({
       ),
     },
     watchlist: {
+      icon: "★",
       title: "관심종목 & 보유 요약",
       span: "wide",
+      sparkline: (portfolio?.holdings || []).slice(0, 6).map((h) => Number(h.unrealizedPnl || 0)),
       body: (
         <>
           {!isLoggedIn && <div className="home-empty">로그인하면 관심종목과 개인 계좌 정보를 볼 수 있습니다.</div>}
@@ -233,8 +245,10 @@ export default function HomePage({
       ),
     },
     ranking: {
+      icon: "♟",
       title: "수익률 랭킹",
       span: "narrow",
+      sparkline: top5.map((r) => Number(r.returnRate || 0)),
       body: (
         <>
           {rankingsLoading && <div className="home-empty">랭킹을 불러오는 중...</div>}
@@ -265,8 +279,10 @@ export default function HomePage({
       ),
     },
     charts: {
+      icon: "◷",
       title: "빠른 차트",
       span: "full",
+      sparkline: watchTop.map((_, idx) => idx + 1),
       body: (
         <div className="home-grid home-grid-charts">
           {watchTop.map((code) => (
@@ -335,9 +351,11 @@ export default function HomePage({
               <div className="home-widget-header">
                 <div className="home-widget-title-wrap">
                   <span className="home-widget-drag-handle" title="드래그해서 순서 변경">↕</span>
+                  <span className="home-widget-icon" aria-hidden="true">{widget.icon || "•"}</span>
                   <strong>{widget.title}</strong>
                 </div>
                 <div className="home-widget-actions">
+                  <Sparkline values={widget.sparkline || []} className="home-widget-sparkline" />
                   {widgetId === "watchlist" && <button type="button" className="home-link-btn" onClick={() => navigateTo("/charts")}>차트 관리</button>}
                   {widgetId === "ranking" && <button type="button" className="home-link-btn" onClick={() => navigateTo("/league")}>전체 랭킹</button>}
                   {widgetId === "movers" && <button type="button" className="home-link-btn" onClick={() => navigateTo("/market")}>종목정보</button>}
@@ -390,6 +408,29 @@ function MetricCard({ label, value, tone }) {
       <div className="home-metric-label">{label}</div>
       <div className="home-metric-value">{value}</div>
     </div>
+  );
+}
+
+function Sparkline({ values, className }) {
+  const nums = (values || []).map((v) => Number(v)).filter(Number.isFinite);
+  if (nums.length < 2) return null;
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const width = 74;
+  const height = 20;
+  const range = max - min || 1;
+  const points = nums
+    .map((v, i) => {
+      const x = (i / (nums.length - 1)) * width;
+      const y = height - ((v - min) / range) * height;
+      return `${x},${y}`;
+    })
+    .join(" ");
+
+  return (
+    <svg className={className} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="trend">
+      <polyline fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" points={points} />
+    </svg>
   );
 }
 

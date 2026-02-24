@@ -64,9 +64,9 @@ export default function SimulationPage(props) {
 
   if (!isLoggedIn) {
     return (
-      <div className="app-card sim-page-card" style={cardWrap}>
-        <h3 style={{ marginTop: 0 }}>모의투자</h3>
-        <p style={{ margin: 0, color: "#64748b" }}>모의투자는 로그인 후 사용할 수 있습니다.</p>
+      <div className="app-card sim-page-card sim-page-wrap">
+        <h3 className="sim-page-title">모의투자</h3>
+        <p className="sim-page-muted">모의투자는 로그인 후 사용할 수 있습니다.</p>
       </div>
     );
   }
@@ -76,11 +76,11 @@ export default function SimulationPage(props) {
   const anchorDate = leagueState?.anchorDate || replayState?.anchorDate || "-";
 
   return (
-    <div className="app-card sim-page-card" style={cardWrap}>
-      <h3 style={{ marginTop: 0 }}>모의투자</h3>
+    <div className="app-card sim-page-card sim-page-wrap">
+      <h3 className="sim-page-title">모의투자</h3>
 
-      <div className="app-toolbar-row" style={rowWrap}>
-        <span style={subtleText}>공용 리그 기준으로 자동 진행됩니다.</span>
+      <div className="app-toolbar-row sim-inline-row">
+        <span className="sim-page-subtle">공용 리그 기준으로 자동 진행됩니다.</span>
         <button type="button" onClick={startReplay} disabled={replayLoading || simLoading}>
           리플레이 시작
         </button>
@@ -92,14 +92,16 @@ export default function SimulationPage(props) {
         </button>
       </div>
 
-      <div className="app-toolbar-row" style={{ ...rowWrap, marginTop: 8 }}>
-        <span>공용 리그 상태: {running ? "진행 중" : "정지"}</span>
+      <div className="app-toolbar-row sim-inline-row sim-inline-row-gap-sm">
+        <span>리그 상태: {running ? "진행 중" : "정지"}</span>
         <span>공용 기준일: {currentDate}</span>
         <span>시작일: {anchorDate}</span>
-        {leagueState?.tickSeconds ? <span>틱: {leagueState.tickSeconds}초 / {leagueState.stepDays || 1}일</span> : null}
+        {leagueState?.tickSeconds ? (
+          <span>틱: {leagueState.tickSeconds}초 / {leagueState.stepDays || 1}일</span>
+        ) : null}
       </div>
 
-      <div className="app-toolbar-row" style={{ ...rowWrap, marginTop: 12 }}>
+      <div className="app-toolbar-row sim-inline-row sim-inline-row-gap-md">
         <label>종목</label>
         <select value={tradeCode} onChange={(e) => setTradeCode(e.target.value)} disabled={simLoading}>
           {tradeableCodes.map((code) => (
@@ -109,7 +111,7 @@ export default function SimulationPage(props) {
           ))}
         </select>
         <label>수량</label>
-        <input type="number" min="1" value={tradeQty} onChange={(e) => setTradeQty(e.target.value)} style={{ width: 90 }} />
+        <input type="number" min="1" value={tradeQty} onChange={(e) => setTradeQty(e.target.value)} className="sim-inline-input-sm" />
         <label>주문유형</label>
         <select value={tradeOrderType} onChange={(e) => setTradeOrderType(e.target.value)} disabled={simLoading}>
           <option value="MARKET">시장가</option>
@@ -124,7 +126,7 @@ export default function SimulationPage(props) {
               step="1"
               value={tradeLimitPrice}
               onChange={(e) => setTradeLimitPrice(e.target.value)}
-              style={{ width: 120 }}
+              className="sim-inline-input-md"
               placeholder="가격 입력"
             />
           </>
@@ -137,11 +139,11 @@ export default function SimulationPage(props) {
         </button>
       </div>
 
-      {tradeMessage && <div style={{ marginTop: 10, color: "#334155" }}>{tradeMessage}</div>}
+      {tradeMessage && <div className="sim-trade-message">{tradeMessage}</div>}
 
       {tradeCode && (
-        <div className="sim-selected-stock-card" style={{ marginTop: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <div className="sim-selected-stock-card sim-selected-stock-card-gap">
+          <div className="sim-selected-stock-head">
             <strong>
               {getStockNameByCode(tradeCode)} ({tradeCode})
             </strong>
@@ -153,9 +155,7 @@ export default function SimulationPage(props) {
                   ? `${fmt(Number(selectedTradeHolding.currentPrice))}원`
                   : "-"}
             </span>
-            <span style={{ color: "#64748b", fontSize: 12 }}>
-              기준일: {currentDate}
-            </span>
+            <span className="sim-selected-stock-date">기준일 {currentDate}</span>
           </div>
           <StockChartCard
             key={`${tradeCode}-${chartEndDate || "today"}`}
@@ -169,7 +169,7 @@ export default function SimulationPage(props) {
         </div>
       )}
 
-      <div className="sim-order-tabs" style={{ marginTop: 12 }}>
+      <div className="sim-order-tabs sim-order-tabs-gap">
         <button type="button" className={simOrderTab === "pending" ? "sim-order-tab active" : "sim-order-tab"} onClick={() => setSimOrderTab("pending")}>
           미체결 주문
         </button>
@@ -283,7 +283,7 @@ export default function SimulationPage(props) {
               </select>
             </div>
             {rankingPeriod !== "ALL" && (
-              <div style={{ color: "#64748b", fontSize: 12 }}>기간 랭킹은 스냅샷 데이터 적용 후 활성화 예정입니다.</div>
+              <div className="sim-ranking-note">기간 랭킹은 스냅샷 데이터 적용 후 활성화될 예정입니다.</div>
             )}
             {rankingsLoading && <div>불러오는 중...</div>}
             {!rankingsLoading && rankings.length === 0 && <div>랭킹 데이터가 없습니다.</div>}
@@ -306,7 +306,12 @@ export default function SimulationPage(props) {
                       <tr key={`ranking-${r.userId}`} className={r.me ? "sim-ranking-me-row" : ""}>
                         <td className="num">{fmt(Number(r.rank))}</td>
                         <td>
-                          <button type="button" className="sim-ranking-name-btn" onClick={() => openRankingUserSummary(r.userId)} disabled={rankingUserSummaryLoading}>
+                          <button
+                            type="button"
+                            className="sim-ranking-name-btn"
+                            onClick={() => openRankingUserSummary(r.userId)}
+                            disabled={rankingUserSummaryLoading}
+                          >
                             {r.me ? `${r.userName} (나)` : r.userName}
                           </button>
                         </td>
@@ -329,9 +334,9 @@ export default function SimulationPage(props) {
       </div>
 
       {portfolio && (
-        <div style={{ fontSize: 14, color: "#334155", marginTop: 12 }}>
-          예수금: {fmt(portfolio.cash)}원 | 평가금액: {fmt(portfolio.marketValue)}원 | 총자산: {fmt(portfolio.totalValue)}원 | 실현손익:{" "}
-          {fmtSigned(portfolio.realizedPnl)}원 | 미실현손익: {fmtSigned(portfolio.unrealizedPnl)}원
+        <div className="sim-portfolio-inline-summary">
+          예수금 {fmt(portfolio.cash)}원 | 평가금액 {fmt(portfolio.marketValue)}원 | 총자산 {fmt(portfolio.totalValue)}원 | 실현손익{" "}
+          {fmtSigned(portfolio.realizedPnl)}원 | 미실현손익 {fmtSigned(portfolio.unrealizedPnl)}원
         </div>
       )}
 
@@ -383,8 +388,12 @@ export default function SimulationPage(props) {
                             value={holdingOrderQtys[h.code] ?? 1}
                             onChange={(e) => setHoldingOrderQtys((prev) => ({ ...prev, [h.code]: e.target.value }))}
                           />
-                          <button type="button" className="sim-holding-quick-btn" onClick={() => setHoldingQuickQty(h.code, holdQty, 0.25)}>25%</button>
-                          <button type="button" className="sim-holding-quick-btn" onClick={() => setHoldingQuickQty(h.code, holdQty, 0.5)}>50%</button>
+                          <button type="button" className="sim-holding-quick-btn" onClick={() => setHoldingQuickQty(h.code, holdQty, 0.25)}>
+                            25%
+                          </button>
+                          <button type="button" className="sim-holding-quick-btn" onClick={() => setHoldingQuickQty(h.code, holdQty, 0.5)}>
+                            50%
+                          </button>
                           <button
                             type="button"
                             className="sim-holding-buy-btn"
@@ -405,7 +414,11 @@ export default function SimulationPage(props) {
                           >
                             매도
                           </button>
-                          <button type="button" className="sim-holding-all-sell-btn" onClick={() => openOrderConfirm("SELL", { code: h.code, quantity: holdQty })}>
+                          <button
+                            type="button"
+                            className="sim-holding-all-sell-btn"
+                            onClick={() => openOrderConfirm("SELL", { code: h.code, quantity: holdQty })}
+                          >
                             전량
                           </button>
                         </div>
@@ -434,7 +447,12 @@ export default function SimulationPage(props) {
             </div>
             <div className="sim-confirm-actions">
               <button type="button" className="sim-order-mini-btn" onClick={() => setOrderConfirmDraft(null)}>취소</button>
-              <button type="button" className={orderConfirmDraft.side === "BUY" ? "sim-holding-buy-btn" : "sim-holding-sell-btn"} onClick={confirmOrderDraft} disabled={simLoading}>
+              <button
+                type="button"
+                className={orderConfirmDraft.side === "BUY" ? "sim-holding-buy-btn" : "sim-holding-sell-btn"}
+                onClick={confirmOrderDraft}
+                disabled={simLoading}
+              >
                 확인
               </button>
             </div>
@@ -465,14 +483,3 @@ export default function SimulationPage(props) {
 function TableWrap({ children }) {
   return <div className="sim-order-table-wrap">{children}</div>;
 }
-
-const cardWrap = {
-  marginTop: 20,
-  marginBottom: 20,
-  padding: 15,
-  background: "#fff",
-  borderRadius: 10,
-  border: "1px solid #e5e7eb",
-};
-const rowWrap = { display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" };
-const subtleText = { color: "#64748b", fontSize: 13 };
