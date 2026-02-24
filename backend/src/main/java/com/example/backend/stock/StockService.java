@@ -105,7 +105,7 @@ public class StockService {
         if (cached != null) return cached;
 
         List<ChartDataDto> fromDb = getChartFromDb(normalizedCode, startLocalDate, endLocalDate);
-        if (!fromDb.isEmpty()) {
+        if (isChartRangeSufficient(fromDb, startLocalDate, endLocalDate)) {
             putCachedChart(cacheKey, fromDb);
             return fromDb;
         }
@@ -207,20 +207,51 @@ public class StockService {
 
         int requested = codes.size();
         int processed = 0;
+        Map<String, String> failedCodeMessages = new HashMap<>();
+        List<String> succeededCodes = new ArrayList<>();
         int chunkRequests = 0;
         for (String code : codes) {
-            String normalizedCode = normalizeCode(code);
-            LocalDate cursorEnd = end;
-            while (!cursorEnd.isBefore(start)) {
-                getDailyChart(normalizedCode, chunk, cursorEnd.toString());
-                chunkRequests++;
-                cursorEnd = cursorEnd.minusMonths(chunk);
+            String normalizedCode;
+            try {
+                normalizedCode = normalizeCode(code);
+            } catch (Exception e) {
+                failedCodeMessages.put(String.valueOf(code), safeMessage(e));
+                continue;
             }
-            processed++;
-            priceSeriesCache.remove(normalizedCode);
+
+            try {
+                LocalDate cursorEnd = end;
+                while (!cursorEnd.isBefore(start)) {
+                    LocalDate chunkStart = cursorEnd.minusMonths(chunk).plusDays(1);
+                    if (chunkStart.isBefore(start)) {
+                        chunkStart = start;
+                    }
+                    List<ChartDataDto> chunkData = fetchDailyChartFromKis(normalizedCode, chunkStart, cursorEnd);
+                    if (!chunkData.isEmpty()) {
+                        saveDailyChartToDb(normalizedCode, chunkData);
+                    }
+                    chunkRequests++;
+                    cursorEnd = chunkStart.minusDays(1);
+                }
+                processed++;
+                succeededCodes.add(normalizedCode);
+                priceSeriesCache.remove(normalizedCode);
+                chartCache.keySet().removeIf(key -> key.startsWith(normalizedCode + ":"));
+            } catch (Exception e) {
+                failedCodeMessages.put(normalizedCode, safeMessage(e));
+            }
         }
 
-        return new StockBackfillResponseDto(requested, processed, chunkRequests, start.toString(), end.toString());
+        return new StockBackfillResponseDto(
+                requested,
+                processed,
+                failedCodeMessages.size(),
+                chunkRequests,
+                start.toString(),
+                end.toString(),
+                List.copyOf(succeededCodes),
+                Map.copyOf(failedCodeMessages)
+        );
     }
 
     private List<ChartDataDto> getChartFromDb(String code, LocalDate startDate, LocalDate endDate) {
@@ -235,7 +266,38 @@ public class StockService {
         return result;
     }
 
+    private boolean isChartRangeSufficient(List<ChartDataDto> rows, LocalDate startDate, LocalDate endDate) {
+        if (rows == null || rows.isEmpty()) return false;
+        try {
+            LocalDate first = LocalDate.parse(rows.get(0).getTime());
+            LocalDate last = LocalDate.parse(rows.get(rows.size() - 1).getTime());
+
+            // Allow a few days tolerance for weekends/holidays on both ends.
+            LocalDate allowedStart = startDate.plusDays(7);
+            LocalDate allowedEnd = endDate.minusDays(7);
+
+            boolean startCovered = !first.isAfter(allowedStart);
+            boolean endCovered = !last.isBefore(allowedEnd);
+            return startCovered && endCovered;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private String safeMessage(Exception e) {
+        String msg = e == null ? null : e.getMessage();
+        if (msg == null || msg.isBlank()) {
+            return "unknown error";
+        }
+        return msg.length() > 400 ? msg.substring(0, 400) : msg;
+    }
+
     private List<ChartDataDto> fetchDailyChartFromKis(String stockCode, int months, LocalDate endLocalDate) {
+        LocalDate startLocalDate = endLocalDate.minusMonths(months);
+        return fetchDailyChartFromKis(stockCode, startLocalDate, endLocalDate);
+    }
+
+    private List<ChartDataDto> fetchDailyChartFromKis(String stockCode, LocalDate startLocalDate, LocalDate endLocalDate) {
         ensureAccessToken();
 
         RestTemplate restTemplate = new RestTemplate();
@@ -247,7 +309,7 @@ public class StockService {
         headers.set("tr_id", trId);
 
         String today = endLocalDate.format(DateTimeFormatter.ofPattern("yyyyMMdd"));
-        String startDate = endLocalDate.minusMonths(months).format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+        String startDate = startLocalDate.format(DateTimeFormatter.ofPattern("yyyyMMdd"));
 
         List<ChartDataDto> chartData = new ArrayList<>();
         Set<String> seenDates = new HashSet<>();

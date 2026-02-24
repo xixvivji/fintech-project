@@ -17,6 +17,10 @@ export default function SimulationPage(props) {
     setTradeCode,
     tradeQty,
     setTradeQty,
+    tradeOrderType,
+    setTradeOrderType,
+    tradeLimitPrice,
+    setTradeLimitPrice,
     tradeableCodes,
     getStockNameByCode,
     tradeMessage,
@@ -106,6 +110,25 @@ export default function SimulationPage(props) {
         </select>
         <label>수량</label>
         <input type="number" min="1" value={tradeQty} onChange={(e) => setTradeQty(e.target.value)} style={{ width: 90 }} />
+        <label>주문유형</label>
+        <select value={tradeOrderType} onChange={(e) => setTradeOrderType(e.target.value)} disabled={simLoading}>
+          <option value="MARKET">시장가</option>
+          <option value="LIMIT">지정가</option>
+        </select>
+        {tradeOrderType === "LIMIT" && (
+          <>
+            <label>목표가</label>
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={tradeLimitPrice}
+              onChange={(e) => setTradeLimitPrice(e.target.value)}
+              style={{ width: 120 }}
+              placeholder="가격 입력"
+            />
+          </>
+        )}
         <button type="button" className="sim-holding-buy-btn" disabled={simLoading} onClick={() => openOrderConfirm("BUY")}>
           매수
         </button>
@@ -130,8 +153,12 @@ export default function SimulationPage(props) {
                   ? `${fmt(Number(selectedTradeHolding.currentPrice))}원`
                   : "-"}
             </span>
+            <span style={{ color: "#64748b", fontSize: 12 }}>
+              기준일: {currentDate}
+            </span>
           </div>
           <StockChartCard
+            key={`${tradeCode}-${chartEndDate || "today"}`}
             apiBaseUrl={apiBaseUrl}
             code={tradeCode}
             months={6}
@@ -400,6 +427,10 @@ export default function SimulationPage(props) {
               <div><strong>구분</strong> {orderConfirmDraft.side === "BUY" ? "매수" : "매도"}</div>
               <div><strong>종목</strong> {getStockNameByCode(orderConfirmDraft.code)} ({orderConfirmDraft.code})</div>
               <div><strong>수량</strong> {fmt(orderConfirmDraft.quantity)}주</div>
+              <div><strong>주문유형</strong> {orderConfirmDraft.orderType === "LIMIT" ? "지정가" : "시장가"}</div>
+              {orderConfirmDraft.orderType === "LIMIT" && (
+                <div><strong>목표가</strong> {fmt(Number(orderConfirmDraft.limitPrice || 0))}원</div>
+              )}
             </div>
             <div className="sim-confirm-actions">
               <button type="button" className="sim-order-mini-btn" onClick={() => setOrderConfirmDraft(null)}>취소</button>

@@ -4,6 +4,10 @@ import "./App.css";
 import AuthPage from "./pages/AuthPage";
 import ChartsPage from "./pages/ChartsPage";
 import SimulationPage from "./pages/SimulationPage";
+import HomePage from "./pages/HomePage";
+import LeaguePage from "./pages/LeaguePage";
+import MarketPage from "./pages/MarketPage";
+import NewsPage from "./pages/NewsPage";
 import { STOCK_OPTIONS, getStockNameByCode } from "./constants/stocks";
 
 const API_BASE_URL = "http://localhost:8080";
@@ -19,8 +23,19 @@ function readStoredToken() {
 }
 
 function normalizePath(pathname) {
-  if (pathname === "/login" || pathname === "/signup" || pathname === "/sim") return pathname;
-  return "/charts";
+  if (
+    pathname === "/" ||
+    pathname === "/login" ||
+    pathname === "/signup" ||
+    pathname === "/charts" ||
+    pathname === "/sim" ||
+    pathname === "/league" ||
+    pathname === "/market" ||
+    pathname === "/news"
+  ) {
+    return pathname;
+  }
+  return "/";
 }
 
 function parseError(err, fallback) {
@@ -45,6 +60,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [monthsInput, setMonthsInput] = useState(12);
   const [applied, setApplied] = useState({ months: 12 });
+  const [chartDisplayMode, setChartDisplayMode] = useState("normal");
   const [viewCodes, setViewCodes] = useState(["005930", "000660"]);
   const [watchlistCodes, setWatchlistCodes] = useState([]);
   const [watchlistLoading, setWatchlistLoading] = useState(false);
@@ -59,6 +75,8 @@ export default function App() {
   const [leagueState, setLeagueState] = useState(null);
   const [tradeCode, setTradeCode] = useState("005930");
   const [tradeQty, setTradeQty] = useState("1");
+  const [tradeOrderType, setTradeOrderType] = useState("MARKET");
+  const [tradeLimitPrice, setTradeLimitPrice] = useState("");
   const [simSelectedPrice, setSimSelectedPrice] = useState(null);
   const [simOrderTab, setSimOrderTab] = useState("pending");
   const [pendingLoading, setPendingLoading] = useState(false);
@@ -242,11 +260,12 @@ export default function App() {
     if (authToken) {
       loadMe();
       loadWatchlist();
+      loadLeagueState();
     } else {
       setCurrentUser(null);
       setWatchlistCodes([]);
     }
-  }, [authToken, loadMe, loadWatchlist]);
+  }, [authToken, loadLeagueState, loadMe, loadWatchlist]);
 
   useEffect(() => {
     if (!authToken || path !== "/sim") return;
@@ -254,14 +273,17 @@ export default function App() {
   }, [authToken, path, refreshSimData]);
 
   useEffect(() => {
-    if (!authToken || path !== "/sim") return;
+    if (!authToken) return;
     const id = window.setInterval(() => {
       loadLeagueState();
-      loadReplayState();
-      if (simOrderTab === "rankings") loadRankings();
+      if (path === "/sim") {
+        loadReplayState();
+        loadPortfolio();
+        if (simOrderTab === "rankings") loadRankings();
+      }
     }, 10000);
     return () => window.clearInterval(id);
-  }, [authToken, path, simOrderTab, loadLeagueState, loadRankings, loadReplayState]);
+  }, [authToken, path, simOrderTab, loadLeagueState, loadPortfolio, loadRankings, loadReplayState]);
 
   useEffect(() => {
     if (!authToken || path !== "/sim" || !leagueState) return;
@@ -284,7 +306,7 @@ export default function App() {
       persistToken(token);
       setCurrentUser({ id: res.data?.userId, name: res.data?.name });
       setLoginPassword("");
-      navigateTo("/charts");
+      navigateTo("/");
     } catch (err) {
       setAuthMessage(`로그인 실패: ${parseError(err, "서버 오류")}`);
     } finally {
@@ -323,6 +345,11 @@ export default function App() {
     navigateTo("/login");
   }, [clearSession, navigateTo]);
 
+  const openTradeFromMarket = useCallback((code) => {
+    if (code) setTradeCode(code);
+    navigateTo("/sim");
+  }, [navigateTo]);
+
   const filteredStocks = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return STOCK_OPTIONS;
@@ -342,6 +369,19 @@ export default function App() {
 
   const removeFromView = useCallback((code) => {
     setViewCodes((prev) => prev.filter((c) => c !== code));
+  }, []);
+
+  const reorderViewCodes = useCallback((fromCode, toCode) => {
+    if (!fromCode || !toCode || fromCode === toCode) return;
+    setViewCodes((prev) => {
+      const fromIdx = prev.indexOf(fromCode);
+      const toIdx = prev.indexOf(toCode);
+      if (fromIdx < 0 || toIdx < 0) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      return next;
+    });
   }, []);
 
   const toggleWatchlist = useCallback(async (code) => {
@@ -405,10 +445,22 @@ export default function App() {
   const openOrderConfirm = useCallback((side, override = {}) => {
     const code = override.code || tradeCode;
     const quantity = parseQty(override.quantity ?? tradeQty);
+    const orderType = override.orderType || tradeOrderType;
+    const limitPrice = override.limitPrice ?? tradeLimitPrice;
+    if (orderType === "LIMIT" && (!String(limitPrice ?? "").trim() || Number(limitPrice) <= 0)) {
+      setTradeMessage("지정가 주문은 목표가를 입력해야 합니다.");
+      return;
+    }
     setTradeCode(code);
     setTradeQty(String(quantity));
-    setOrderConfirmDraft({ side, code, quantity });
-  }, [parseQty, tradeCode, tradeQty]);
+    setOrderConfirmDraft({
+      side,
+      code,
+      quantity,
+      orderType,
+      limitPrice: orderType === "LIMIT" ? Number(limitPrice) : null,
+    });
+  }, [parseQty, tradeCode, tradeLimitPrice, tradeOrderType, tradeQty]);
 
   const confirmOrderDraft = useCallback(async () => {
     if (!orderConfirmDraft || !authToken) return;
@@ -416,7 +468,13 @@ export default function App() {
     try {
       const res = await axios.post(
         `${API_BASE_URL}/api/sim/order`,
-        { code: orderConfirmDraft.code, side: orderConfirmDraft.side, orderType: "MARKET", quantity: orderConfirmDraft.quantity },
+        {
+          code: orderConfirmDraft.code,
+          side: orderConfirmDraft.side,
+          orderType: orderConfirmDraft.orderType || "MARKET",
+          limitPrice: orderConfirmDraft.orderType === "LIMIT" ? Number(orderConfirmDraft.limitPrice) : null,
+          quantity: orderConfirmDraft.quantity,
+        },
         { headers: authHeaders() }
       );
       setTradeMessage(res.data?.message || "주문이 처리되었습니다.");
@@ -509,6 +567,12 @@ export default function App() {
 
   const authPage = path === "/signup" ? "signup" : "login";
   const chartGridColumns = isNarrowScreen ? "1fr" : "repeat(2, minmax(0, 1fr))";
+  const chartDisplayMonths = useMemo(() => {
+    if (chartDisplayMode === "compact") return Math.min(120, Math.max(applied.months * 2, applied.months + 12));
+    if (chartDisplayMode === "expanded") return Math.max(1, Math.floor(applied.months / 2));
+    return applied.months;
+  }, [applied.months, chartDisplayMode]);
+  const chartCardHeight = chartDisplayMode === "expanded" ? 340 : chartDisplayMode === "compact" ? 220 : 260;
 
   return (
     <div className="app-shell">
@@ -516,16 +580,19 @@ export default function App() {
         <div className="app-header-brand">
           <div className="app-title">Fintech Mock Investing</div>
           <div className="app-subtitle">차트 조회 + 모의투자 + 랭킹</div>
-        </div>
-        <nav className="app-nav">
-          <button type="button" onClick={() => navigateTo("/charts")} className={path === "/charts" ? "app-nav-btn active" : "app-nav-btn"}>차트</button>
-          <button type="button" onClick={() => navigateTo("/sim")} className={path === "/sim" ? "app-nav-btn active" : "app-nav-btn"}>모의투자</button>
-          {!isLoggedIn && <button type="button" onClick={() => navigateTo("/login")} className={path === "/login" ? "app-nav-btn active" : "app-nav-btn"}>로그인</button>}
-          {!isLoggedIn && <button type="button" onClick={() => navigateTo("/signup")} className={path === "/signup" ? "app-nav-btn active" : "app-nav-btn"}>회원가입</button>}
+        </div>        <nav className="app-nav">
+          <button type="button" onClick={() => navigateTo("/")} className={path === "/" ? "app-nav-btn active" : "app-nav-btn"}>Home</button>
+          <button type="button" onClick={() => navigateTo("/charts")} className={path === "/charts" ? "app-nav-btn active" : "app-nav-btn"}>Charts</button>
+          <button type="button" onClick={() => navigateTo("/sim")} className={path === "/sim" ? "app-nav-btn active" : "app-nav-btn"}>Simulation</button>
+          <button type="button" onClick={() => navigateTo("/market")} className={path === "/market" ? "app-nav-btn active" : "app-nav-btn"}>Market</button>
+          <button type="button" onClick={() => navigateTo("/news")} className={path === "/news" ? "app-nav-btn active" : "app-nav-btn"}>News</button>
+          <button type="button" onClick={() => navigateTo("/league")} className={path === "/league" ? "app-nav-btn active" : "app-nav-btn"}>League</button>
+          {!isLoggedIn && <button type="button" onClick={() => navigateTo("/login")} className={path === "/login" ? "app-nav-btn active" : "app-nav-btn"}>Login</button>}
+          {!isLoggedIn && <button type="button" onClick={() => navigateTo("/signup")} className={path === "/signup" ? "app-nav-btn active" : "app-nav-btn"}>Sign Up</button>}
           {isLoggedIn && (
             <>
-              <span className="app-user-name">{currentUser?.name || "사용자"}</span>
-              <button type="button" onClick={handleLogout} className="app-nav-btn">로그아웃</button>
+              <span className="app-user-name">{currentUser?.name || "User"}</span>
+              <button type="button" onClick={handleLogout} className="app-nav-btn">Logout</button>
             </>
           )}
         </nav>
@@ -551,6 +618,29 @@ export default function App() {
           />
         )}
 
+        {path === "/" && (
+          <HomePage
+            apiBaseUrl={API_BASE_URL}
+            isLoggedIn={isLoggedIn}
+            currentUser={currentUser}
+            leagueState={leagueState}
+            portfolio={portfolio}
+            rankings={rankings}
+            rankingsLoading={rankingsLoading}
+            loadRankings={loadRankings}
+            watchlistCodes={watchlistCodes}
+            getStockNameByCode={getStockNameByCode}
+            navigateTo={navigateTo}
+            openTradeFromMarket={openTradeFromMarket}
+            chartEndDate={chartEndDate}
+            fmt={fmt}
+            openRankingUserSummary={openRankingUserSummary}
+            rankingUserSummary={rankingUserSummary}
+            setRankingUserSummary={setRankingUserSummary}
+            rankingUserSummaryLoading={rankingUserSummaryLoading}
+          />
+        )}
+
         {path === "/charts" && (
           <ChartsPage
             apiBaseUrl={API_BASE_URL}
@@ -562,8 +652,13 @@ export default function App() {
             monthsInput={monthsInput}
             setMonthsInput={setMonthsInput}
             applyFilter={applyFilter}
+            chartDisplayMode={chartDisplayMode}
+            setChartDisplayMode={setChartDisplayMode}
+            chartDisplayMonths={chartDisplayMonths}
+            chartCardHeight={chartCardHeight}
             addToView={addToView}
             removeFromView={removeFromView}
+            reorderViewCodes={reorderViewCodes}
             toggleWatchlist={toggleWatchlist}
             watchlistLoading={watchlistLoading}
             uiMessage={uiMessage}
@@ -573,7 +668,39 @@ export default function App() {
             chartCodes={viewCodes}
             chartGridColumns={chartGridColumns}
             chartEndDate={chartEndDate}
+            leagueState={leagueState}
             getStockNameByCode={getStockNameByCode}
+          />
+        )}
+
+
+        {path === "/market" && (
+          <MarketPage
+            apiBaseUrl={API_BASE_URL}
+            chartEndDate={chartEndDate}
+            watchlistCodeSet={watchlistCodeSet}
+            toggleWatchlist={toggleWatchlist}
+            watchlistLoading={watchlistLoading}
+            isLoggedIn={isLoggedIn}
+            getStockNameByCode={getStockNameByCode}
+            selectedTradeCode={tradeCode}
+            openTradeFromMarket={openTradeFromMarket}
+            fmt={fmt}
+          />
+        )}
+
+        {path === "/news" && (
+          <NewsPage chartEndDate={chartEndDate} />
+        )}
+
+        {path === "/league" && (
+          <LeaguePage
+            isLoggedIn={isLoggedIn}
+            leagueState={leagueState}
+            rankings={rankings}
+            rankingsLoading={rankingsLoading}
+            loadRankings={loadRankings}
+            fmt={fmt}
           />
         )}
 
@@ -593,6 +720,10 @@ export default function App() {
             setTradeCode={setTradeCode}
             tradeQty={tradeQty}
             setTradeQty={setTradeQty}
+            tradeOrderType={tradeOrderType}
+            setTradeOrderType={setTradeOrderType}
+            tradeLimitPrice={tradeLimitPrice}
+            setTradeLimitPrice={setTradeLimitPrice}
             tradeableCodes={tradeableCodes}
             getStockNameByCode={getStockNameByCode}
             tradeMessage={tradeMessage}
@@ -638,4 +769,3 @@ export default function App() {
     </div>
   );
 }
-

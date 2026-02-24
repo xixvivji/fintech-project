@@ -30,6 +30,25 @@ export const STOCK_OPTIONS = [
   { name: "한국전력", code: "015760" },
   { name: "삼성전기", code: "009150" },
   { name: "SK이노베이션", code: "096770" },
+  { name: "강원랜드", code: "035250" },
+  { name: "SK텔레콤", code: "017670" },
+  { name: "KT", code: "030200" },
+  { name: "LG유플러스", code: "032640" },
+  { name: "고려아연", code: "010130" },
+  { name: "S-Oil", code: "010950" },
+  { name: "HD현대", code: "267250" },
+  { name: "GS", code: "078930" },
+  { name: "삼성SDS", code: "018260" },
+  { name: "엔씨소프트", code: "036570" },
+  { name: "크래프톤", code: "259960" },
+  { name: "넷마블", code: "251270" },
+  { name: "하이브", code: "352820" },
+  { name: "삼성화재", code: "000810" },
+  { name: "현대모비스", code: "012330" },
+  { name: "HD한국조선해양", code: "009540" },
+  { name: "포스코인터내셔널", code: "047050" },
+  { name: "한국타이어앤테크놀로지", code: "161390" },
+  { name: "유한양행", code: "000100" },
 ];
 
 export const PERIOD_OPTIONS = [
@@ -43,4 +62,3 @@ export const PERIOD_OPTIONS = [
 export function getStockNameByCode(code) {
   return STOCK_OPTIONS.find((s) => s.code === code)?.name || code;
 }
-
