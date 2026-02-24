@@ -47,3 +47,4 @@ public class WatchlistController {
         return ResponseEntity.noContent().build();
     }
 }
+

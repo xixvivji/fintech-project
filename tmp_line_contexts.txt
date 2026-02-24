@@ -1,0 +1,212 @@
+--- 62 ---
+61:     if (message.includes('EGW00133')) {
+62:         return '?\uc88f\uac99 \ubc1c\uae09 ?\uc497\ube33??\uac78\ub838?\ub4ec\ub572?? ?\uc88e\ub586 ????1\u907a? ?\u317c\ub586 ?\uc495\ub8c4??\uc8fc\uc138??';
+63:     }
+--- 65 ---
+64:     if (message.includes('EGW00201')) {
+65:         return '?\ubdbf\uaecc???\ub348\u0422 \ube48\ubc88?\u2478\ub572?? \uc870\ud68c ?\ub77e\ub8c4\u745c??\uba2e\ub8de?\uc1f0\uc908 \uc870\uc808 \uc911\uc774???\uc88e\ub586 ???\u317c\ub586 ?\uc495\ub8c4??\uc8fc\uc138??';
+66:     }
+--- 67 ---
+66:     }
+67:     if (message.includes('output2 ?\ub181\uc4ec')) {
+68:         return '?\ub300\ub5a6 \uae30\uac04??\uc870\ud68c \u5a9b\x80?\u03bd\ube33 ?\uacd7\uc520?\uaccc? ?\ub181\ub4bf?\ub348\ub58e.';
+--- 68 ---
+67:     if (message.includes('output2 ?\ub181\uc4ec')) {
+68:         return '?\ub300\ub5a6 \uae30\uac04??\uc870\ud68c \u5a9b\x80?\u03bd\ube33 ?\uacd7\uc520?\uaccc? ?\ub181\ub4bf?\ub348\ub58e.';
+69:     }
+--- 161 ---
+160:                     if (normalized.length === 0) {
+161:                         setError('?\uacd7\uc520?\uaccc? ?\ub181\ub4bf?\ub348\ub58e. \uc885\ubaa9 \u8084\ubdbe\ubc76\u745c??\ubea4\uc524??\uc8fc\uc138??');
+162:                         return;
+--- 187 ---
+186:                     }
+187:                     setError('\uc870\ud68c ?\u317d\ub663: \ubc31\uc5d4???\u317d\ubefe ?\uacf9\uae6d?\x80 \uc885\ubaa9 \u8084\ubdbe\ubc76\u745c??\ubea4\uc524??\uc8fc\uc138??');
+188:                 })
+--- 401 ---
+400:             } else {
+401:                 setAuthMessage('\ub85c\uadf8???\uba84\ub021??\ub9cc\ub8cc?\uc10f\ubfc0?\ub4ec\ub572?? ?\u317c\ub586 \ub85c\uadf8?\uba85\ube50 \uc8fc\uc138??');
+402:             }
+--- 418 ---
+417:         if (!name || !password) {
+418:             setAuthMessage('?\ub300\ucaeb/\u936e\uafa8?\u8e30\ub34a\uc0c7\u745c??\ub085\uc830??\uc8fc\uc138??');
+419:             return;
+--- 424 ---
+423:             await axios.post(`${API_BASE_URL}/api/auth/signup`, { name, password });
+424:             setAuthMessage('?\ub6af\uc35d\u5a9b\x80???\uafa8\uc9ba. \ub85c\uadf8???\uc10f\uc520\uf9de\x80\u6fe1??\ub300\ub8de?\u2478\ub572??');
+425:             navigateTo('/login');
+--- 433 ---
+432:             } else {
+433:                 setAuthMessage('?\ub6af\uc35d\u5a9b\x80???\u317d\ub663');
+434:             }
+--- 444 ---
+443:         if (!name || !password) {
+444:             setAuthMessage('?\ub300\ucaeb/\u936e\uafa8?\u8e30\ub34a\uc0c7\u745c??\ub085\uc830??\uc8fc\uc138??');
+445:             return;
+--- 452 ---
+451:             if (typeof token !== 'string' || !token.trim()) {
+452:                 setAuthMessage('\ub85c\uadf8???\u317d\ub663: ?\uc88f\uac99???\ub181\ub4bf?\ub348\ub58e.');
+453:                 return;
+--- 469 ---
+468:             } else {
+469:                 setAuthMessage('\ub85c\uadf8???\u317d\ub663');
+470:             }
+--- 485 ---
+484:         clearSessionState();
+485:         setAuthMessage('\ub85c\uadf8?\uafa9\uc350?\uc10f\ubfc0?\ub4ec\ub572??');
+486:     };
+--- 510 ---
+509:             } else {
+510:                 setUiMessage('\u613f\x80?\u044a\uc94c\uf9cf?\ub85c\ub4dc ?\u317d\ub663: \ubc31\uc5d4???\uaccc\uaed0 ?\uacf9\uae6d\u745c??\ubea4\uc524??\uc8fc\uc138??');
+511:             }
+--- 536 ---
+535:             } else {
+536:                 setTradeMessage('?\u044b\ub4c3?\ub300\u2501??\uc870\ud68c ?\u317d\ub663');
+537:             }
+--- 615 ---
+614:             } else {
+615:                 setTradeMessage('?\u044a\uc29c???\u044b\ub4c3?\ub300\u2501??\uc870\ud68c ?\u317d\ub663');
+616:             }
+--- 817 ---
+816:         if (!isLoggedIn) {
+817:             setUiMessage('\ub85c\uadf8????\u613f\x80?\u044a\uc94c\uf9cf\u2479\uc4e3 ?\u044a\uc29c?????\ub349\ub4bf?\ub348\ub58e.');
+818:             return;
+--- 837 ---
+836:             const serverMessage = err?.response?.data?.message;
+837:             const action = inWatchlist ? '?\ub301\uc823' : '\u7570\ubdbd?';
+838:             if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
+--- 850 ---
+849:         if (!isLoggedIn) {
+850:             setTradeMessage('\ub85c\uadf8????\uc8fc\ubb38?????\ub349\ub4bf?\ub348\ub58e.');
+851:             return;
+--- 859 ---
+858:         if (!targetCode) {
+859:             setTradeMessage('\uc8fc\ubb38??\uc885\ubaa9??\u7652\uc1f1? ?\uc88f\uae6e??\uc8fc\uc138??');
+860:             return;
+--- 864 ---
+863:         if (!Number.isInteger(qty) || qty <= 0) {
+864:             setTradeMessage('?\uc10e\uc6fe?\x80 1 ?\ub301\uae3d ?\ubea4\ub2d4?\u044a\ube5e ?\u2478\ub572??');
+865:             return;
+--- 872 ---
+871:             if (!Number.isFinite(limitPrice) || limitPrice <= 0) {
+872:                 setTradeMessage('\uf9de\x80?\ubea2? \uc8fc\ubb38?\x80 ?\uc88f\uc29a??\uf9de\x80?\ubea2?\u745c??\ub085\uc830??\uc8fc\uc138??');
+873:                 return;
+--- 886 ---
+885:             });
+886:             const orderTypeLabel = res.data.orderType === 'LIMIT' ? '\uf9de\x80?\ubea2?' : '?\uc496\uc623\u5a9b\x80';
+887:             if (res.data.status === 'PENDING') {
+--- 910 ---
+909:             } else {
+910:                 setTradeMessage('\uc8fc\ubb38 ?\u317d\ub663');
+911:             }
+--- 924 ---
+923:         if (!code) {
+924:             setTradeMessage('\uc8fc\ubb38??\uc885\ubaa9???\uc88f\uae6e??\uc8fc\uc138??');
+925:             return;
+--- 928 ---
+927:         if (!Number.isInteger(quantity) || quantity <= 0) {
+928:             setTradeMessage('?\uc10e\uc6fe?\x80 1\u4e8c??\ub301\uae3d ?\ubea4\ub2d4?\u044a\ube5e ?\u2478\ub572??');
+929:             return;
+--- 932 ---
+931:         if (orderType === 'LIMIT' && (!Number.isFinite(limitPrice) || limitPrice <= 0)) {
+932:             setTradeMessage('\uf9de\x80?\ubea2? \uc8fc\ubb38 \u5a9b\x80\u5bc3\u2479\uc4e3 ?\ubea4\uc524??\uc8fc\uc138??');
+933:             return;
+--- 959 ---
+958:         if (!isLoggedIn) {
+959:             setTradeMessage('\ub85c\uadf8?????\u044a\uc29c?????\ub349\ub4bf?\ub348\ub58e.');
+960:             return;
+--- 965 ---
+964:             await axios.post(`${API_BASE_URL}/api/sim/reset`);
+965:             setTradeMessage('\ubaa8\uc758?\u044a\uc604 \u6028\uafa9\uc956\u745c?\ucd08\uae30?\ubdc0\ubefd?\ub4ec\ub572??');
+966:             setPortfolio((prev) => {
+--- 988 ---
+987:             } else {
+988:                 setTradeMessage('\ucd08\uae30???\u317d\ub663');
+989:             }
+--- 996 ---
+995:         if (!isLoggedIn) {
+996:             setTradeMessage('\ub85c\uadf8?????\u044a\uc29c?????\ub349\ub4bf?\ub348\ub58e.');
+997:             return;
+--- 1007 ---
+1006:             await loadRankings();
+1007:             setTradeMessage('\ub9ac\ud50c?\ub349\uc520\u745c??\uc496\uc609?\ub349\ub4bf?\ub348\ub58e. 1\ubd84\ub9c8??1?\uacf8\ubfbd?\uc1f1\ubd6b \uc9c4\ud589?\u2478\ub572??');
+1008:         } catch (err) {
+--- 1013 ---
+1012:             } else {
+1013:                 setTradeMessage('\ub9ac\ud50c?\ub349\uc520 ?\uc496\uc609 ?\u317d\ub663');
+1014:             }
+--- 1022 ---
+1021:         if (!isLoggedIn) {
+1022:             setTradeMessage('\ub85c\uadf8?????\u044a\uc29c?????\ub349\ub4bf?\ub348\ub58e.');
+1023:             return;
+--- 1033 ---
+1032:             await loadRankings();
+1033:             setTradeMessage('\ub9ac\ud50c?\ub349\uc520\u745c??\uc1f1\ub586?\ubea4??\ub349\ub4bf?\ub348\ub58e.');
+1034:         } catch (err) {
+--- 1039 ---
+1038:             } else {
+1039:                 setTradeMessage('\ub9ac\ud50c?\ub349\uc520 ?\uc1f1\ub586?\ubea4? ?\u317d\ub663');
+1040:             }
+--- 1048 ---
+1047:         if (!isLoggedIn) {
+1048:             setTradeMessage('\ub85c\uadf8?????\u044a\uc29c?????\ub349\ub4bf?\ub348\ub58e.');
+1049:             return;
+--- 1057 ---
+1056:             await loadRankings();
+1057:             setTradeMessage('\u8a98\uba84\uaedc\u5bc3?\uc8fc\ubb38??\ucde8\uc18c?\ub349\ub4bf?\ub348\ub58e.');
+1058:         } catch (err) {
+--- 1063 ---
+1062:             } else {
+1063:                 setTradeMessage('\uc8fc\ubb38 \ucde8\uc18c ?\u317d\ub663');
+1064:             }
+--- 1117 ---
+1116:                     <div style={{ marginTop: '6px', color: '#777', fontSize: '14px' }}>
+1117:                         {authPage === 'login' ? '\ub85c\uadf8???\uc10f\uc520\uf9de\x80' : '?\ub6af\uc35d\u5a9b\x80???\uc10f\uc520\uf9de\x80'}
+1118:                     </div>
+--- 1167 ---
+1166:                                 type="text"
+1167:                                 placeholder="?\ub300\ucaeb"
+1168:                                 value={loginName}
+--- 1174 ---
+1173:                                 type="password"
+1174:                                 placeholder="\u936e\uafa8?\ubc88\ud638"
+1175:                                 value={loginPassword}
+--- 1217 ---
+1216:                                 type="text"
+1217:                                 placeholder="?\ub300\ucaeb"
+1218:                                 value={signupName}
+--- 1224 ---
+1223:                                 type="password"
+1224:                                 placeholder="\u936e\uafa8?\ubc88\ud638"
+1225:                                 value={signupPassword}
+--- 1431 ---
+1430:                                 >
+1431:                                     {inView ? '?\uc493\uad45 ' : '+ '}
+1432:                                     {stock.name} ({stock.code})
+--- 1448 ---
+1447:                                 >
+1448:                                     {inWatchlist ? '?\ub301\uc823' : '\u7570\ubdbd?'}
+1449:                                 </button>
+--- 1587 ---
+1586:                         <span style={{ color: '#555' }}>
+1587:                             ?? ?? ??: {(leagueState?.running ?? replayState?.running) ? '???' : '??'} / ?? ???: {leagueState?.currentDate || portfolio?.valuationDate || replayState?.currentDate || '-'}
+1588:                         </span>
+--- 1681 ---
+1680:                                                     <tr key={o.id}>
+1681:                                                         <td className={o.side === 'BUY' ? 'up' : 'down'}>{o.side === 'BUY' ? '??' : '??'}</td>
+1682:                                                         <td>{getStockNameByCode(o.code)} ({o.code})</td>
+--- 1732 ---
+1731:                                                     <tr key={o.id}>
+1732:                                                         <td className={o.side === 'BUY' ? 'up' : 'down'}>{o.side === 'BUY' ? '??' : '??'}</td>
+1733:                                                         <td>{getStockNameByCode(o.code)} ({o.code})</td>
+--- 1757 ---
+1756:                                             if (next !== 'ALL') {
+1757:                                                 setTradeMessage('??? ??? ??? ?? ?? ??/??? ?? ? ??????. ??? ?? ??? ?????.');
+1758:                                             }
+--- 1888 ---
+1887:                                 <div className="sim-confirm-body">
+1888:                                     <div><strong>??</strong> {orderConfirmDraft.side === 'BUY' ? '??' : '??'}</div>
+1889:                                     <div><strong>??</strong> {getStockNameByCode(orderConfirmDraft.code)} ({orderConfirmDraft.code})</div>
+--- 1891 ---
+1890:                                     <div><strong>??</strong> {fmt(orderConfirmDraft.quantity)}?</div>
+1891:                                     <div><strong>????</strong> {orderConfirmDraft.orderType === 'LIMIT' ? '???' : '???'}</div>
+1892:                                     {orderConfirmDraft.orderType === 'LIMIT' && <div><strong>???</strong> {fmt(orderConfirmDraft.limitPrice)}?</div>}

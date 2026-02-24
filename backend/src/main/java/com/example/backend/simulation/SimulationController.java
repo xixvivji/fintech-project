@@ -61,6 +61,12 @@ public class SimulationController {
         return simulationService.getReplayState(userId);
     }
 
+    @GetMapping("/league-state")
+    public SimLeagueStateDto getLeagueState(@RequestHeader("Authorization") String authorizationHeader) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
+        return simulationService.getLeagueState(userId);
+    }
+
     @GetMapping("/orders/pending")
     public List<PendingOrderDto> getPendingOrders(@RequestHeader("Authorization") String authorizationHeader) {
         Long userId = jwtService.validateAndGetUserId(authorizationHeader);
@@ -77,6 +83,15 @@ public class SimulationController {
     public List<SimRankingDto> getRankings(@RequestHeader("Authorization") String authorizationHeader) {
         Long userId = jwtService.validateAndGetUserId(authorizationHeader);
         return simulationService.getRankings(userId);
+    }
+
+    @GetMapping("/rankings/{targetUserId}/portfolio")
+    public SimRankingPortfolioSummaryDto getRankingPortfolioSummary(
+            @RequestHeader("Authorization") String authorizationHeader,
+            @PathVariable Long targetUserId
+    ) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
+        return simulationService.getRankingPortfolioSummary(userId, targetUserId);
     }
 
     @DeleteMapping("/orders/pending/{orderId}")

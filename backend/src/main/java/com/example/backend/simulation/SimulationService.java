@@ -11,7 +11,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -21,7 +23,8 @@ public class SimulationService {
     private static final double INITIAL_CASH = 50_000_000;
     private static final int REPLAY_TICK_SECONDS = 60;
     private static final int REPLAY_STEP_DAYS = 1;
-    private static final LocalDate DEFAULT_REPLAY_START_DATE = LocalDate.of(2025, 1, 1);
+    private static final LocalDate DEFAULT_REPLAY_START_DATE = LocalDate.of(2020, 1, 1);
+    private static final String DEFAULT_LEAGUE_CODE = "MAIN";
 
     private final StockService stockService;
     private final SimAccountRepository simAccountRepository;
@@ -29,6 +32,7 @@ public class SimulationService {
     private final SimReplayStateRepository simReplayStateRepository;
     private final SimPendingOrderRepository simPendingOrderRepository;
     private final SimTradeExecutionRepository simTradeExecutionRepository;
+    private final SimLeagueStateRepository simLeagueStateRepository;
     private final UserRepository userRepository;
     private final ScheduledExecutorService replayExecutor = Executors.newSingleThreadScheduledExecutor();
 
@@ -39,6 +43,7 @@ public class SimulationService {
             SimReplayStateRepository simReplayStateRepository,
             SimPendingOrderRepository simPendingOrderRepository,
             SimTradeExecutionRepository simTradeExecutionRepository,
+            SimLeagueStateRepository simLeagueStateRepository,
             UserRepository userRepository
     ) {
         this.stockService = stockService;
@@ -47,6 +52,7 @@ public class SimulationService {
         this.simReplayStateRepository = simReplayStateRepository;
         this.simPendingOrderRepository = simPendingOrderRepository;
         this.simTradeExecutionRepository = simTradeExecutionRepository;
+        this.simLeagueStateRepository = simLeagueStateRepository;
         this.userRepository = userRepository;
     }
 
@@ -60,12 +66,11 @@ public class SimulationService {
         replayExecutor.shutdownNow();
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public synchronized PortfolioResponseDto getPortfolio(Long userId) {
         validateUserId(userId);
         SimAccountEntity account = getOrCreateAccount(userId);
-        SimReplayStateEntity replayState = getOrCreateReplayState(userId);
-        LocalDate valuationDate = replayState.getReplayDate() == null ? LocalDate.now() : LocalDate.parse(replayState.getReplayDate());
+        LocalDate valuationDate = resolveValuationDate(userId);
 
         List<HoldingDto> holdings = new ArrayList<>();
         double marketValue = 0;
@@ -100,7 +105,7 @@ public class SimulationService {
                 round2(unrealizedPnl),
                 holdings,
                 valuationDate.toString(),
-                replayState.isRunning()
+                getOrCreateLeagueState().isRunning()
         );
     }
 
@@ -108,7 +113,7 @@ public class SimulationService {
     public synchronized SimOrderResponseDto placeOrder(Long userId, SimOrderRequestDto request) {
         validateUserId(userId);
         if (request == null) {
-            throw new IllegalArgumentException("주문 요청이 비어 있습니다.");
+            throw new IllegalArgumentException("Order request is empty.");
         }
 
         String code = normalizeCode(request.getCode());
@@ -118,12 +123,11 @@ public class SimulationService {
         Double limitPrice = normalizeLimitPrice(request.getLimitPrice(), orderType);
 
         if (qty <= 0) {
-            throw new IllegalArgumentException("수량은 1 이상이어야 합니다.");
+            throw new IllegalArgumentException("Quantity must be at least 1.");
         }
 
         SimAccountEntity account = getOrCreateAccount(userId);
-        SimReplayStateEntity replayState = getOrCreateReplayState(userId);
-        LocalDate valuationDate = replayState.getReplayDate() == null ? LocalDate.now() : LocalDate.parse(replayState.getReplayDate());
+        LocalDate valuationDate = resolveValuationDate(userId);
 
         double price = stockService.getClosePriceOnOrBefore(code, valuationDate);
         if ("MARKET".equals(orderType) || isLimitExecutable(side, price, limitPrice)) {
@@ -176,44 +180,68 @@ public class SimulationService {
     @Transactional
     public synchronized PortfolioResponseDto startReplay(Long userId, String startDate) {
         validateUserId(userId);
-        SimReplayStateEntity replayState = getOrCreateReplayState(userId);
-        String anchorDate = replayState.getAnchorDate();
-        if (anchorDate == null || anchorDate.isBlank()) {
+
+        SimLeagueStateEntity leagueState = getOrCreateLeagueState();
+        if (leagueState.getAnchorDate() == null || leagueState.getAnchorDate().isBlank()) {
             LocalDate date = parseStartDateOrDefault(startDate);
-            anchorDate = date.toString();
-            replayState.setAnchorDate(anchorDate);
-            replayState.setReplayDate(anchorDate);
-        } else if (replayState.getReplayDate() == null || replayState.getReplayDate().isBlank()) {
-            replayState.setReplayDate(anchorDate);
+            leagueState.setAnchorDate(date.toString());
+            leagueState.setCurrentDate(date.toString());
+        } else if (leagueState.getCurrentDate() == null || leagueState.getCurrentDate().isBlank()) {
+            leagueState.setCurrentDate(leagueState.getAnchorDate());
         }
+        leagueState.setRunning(true);
+        simLeagueStateRepository.save(leagueState);
+
+        SimReplayStateEntity replayState = getOrCreateReplayState(userId);
+        replayState.setAnchorDate(leagueState.getAnchorDate());
+        replayState.setReplayDate(leagueState.getCurrentDate());
         replayState.setRunning(true);
         simReplayStateRepository.save(replayState);
-        processPendingOrders(userId, LocalDate.parse(replayState.getReplayDate()));
 
+        processPendingOrders(userId, LocalDate.parse(leagueState.getCurrentDate()));
         return getPortfolio(userId);
     }
 
     @Transactional
     public synchronized PortfolioResponseDto pauseReplay(Long userId) {
         validateUserId(userId);
+
+        SimLeagueStateEntity leagueState = getOrCreateLeagueState();
+        leagueState.setRunning(false);
+        simLeagueStateRepository.save(leagueState);
+
         SimReplayStateEntity replayState = getOrCreateReplayState(userId);
         replayState.setRunning(false);
         simReplayStateRepository.save(replayState);
         return getPortfolio(userId);
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public synchronized ReplayStateDto getReplayState(Long userId) {
         validateUserId(userId);
-        SimReplayStateEntity replayState = getOrCreateReplayState(userId);
+        SimLeagueStateEntity leagueState = getOrCreateLeagueState();
         PortfolioResponseDto portfolio = getPortfolio(userId);
         return new ReplayStateDto(
                 portfolio.getValuationDate(),
-                replayState.getAnchorDate(),
-                replayState.isRunning(),
+                leagueState.getAnchorDate(),
+                leagueState.isRunning(),
                 REPLAY_STEP_DAYS,
                 REPLAY_TICK_SECONDS,
                 portfolio
+        );
+    }
+
+    @Transactional
+    public synchronized SimLeagueStateDto getLeagueState(Long userId) {
+        validateUserId(userId);
+        SimLeagueStateEntity leagueState = getOrCreateLeagueState();
+        return new SimLeagueStateDto(
+                DEFAULT_LEAGUE_CODE,
+                leagueState.getAnchorDate(),
+                leagueState.getCurrentDate(),
+                leagueState.isRunning(),
+                REPLAY_STEP_DAYS,
+                REPLAY_TICK_SECONDS
         );
     }
 
@@ -258,7 +286,7 @@ public class SimulationService {
         return result;
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public synchronized List<SimRankingDto> getRankings(Long currentUserId) {
         validateUserId(currentUserId);
         List<UserEntity> users = userRepository.findAll();
@@ -303,6 +331,16 @@ public class SimulationService {
     }
 
     @Transactional
+    public synchronized SimRankingPortfolioSummaryDto getRankingPortfolioSummary(Long currentUserId, Long targetUserId) {
+        validateUserId(currentUserId);
+        validateUserId(targetUserId);
+        UserEntity user = userRepository.findById(targetUserId)
+                .orElseThrow(() -> new IllegalArgumentException("사용자를 찾을 수 없습니다."));
+        PortfolioResponseDto portfolio = getPortfolio(targetUserId);
+        return new SimRankingPortfolioSummaryDto(user.getId(), user.getName(), portfolio);
+    }
+
+    @Transactional
     public synchronized void cancelPendingOrder(Long userId, Long orderId) {
         validateUserId(userId);
         if (orderId == null || orderId <= 0) {
@@ -337,13 +375,68 @@ public class SimulationService {
 
     @Transactional
     protected synchronized void advanceReplayIfRunning() {
-        List<SimReplayStateEntity> runningStates = simReplayStateRepository.findByRunningTrueAndReplayDateIsNotNull();
-        for (SimReplayStateEntity replayState : runningStates) {
-            LocalDate next = LocalDate.parse(replayState.getReplayDate()).plusDays(REPLAY_STEP_DAYS);
-            replayState.setReplayDate(next.toString());
-            simReplayStateRepository.save(replayState);
-            processPendingOrders(replayState.getUserId(), next);
+        SimLeagueStateEntity leagueState = getOrCreateLeagueState();
+        if (!leagueState.isRunning() || leagueState.getCurrentDate() == null || leagueState.getCurrentDate().isBlank()) {
+            return;
         }
+
+        LocalDate next = LocalDate.parse(leagueState.getCurrentDate()).plusDays(REPLAY_STEP_DAYS);
+        leagueState.setCurrentDate(next.toString());
+        simLeagueStateRepository.save(leagueState);
+
+        syncUserReplayDates(next);
+        processPendingOrdersForAllUsers(next);
+    }
+
+    private LocalDate resolveValuationDate(Long userId) {
+        SimLeagueStateEntity leagueState = getOrCreateLeagueState();
+        if (leagueState.getCurrentDate() != null && !leagueState.getCurrentDate().isBlank()) {
+            return LocalDate.parse(leagueState.getCurrentDate());
+        }
+
+        SimReplayStateEntity replayState = getOrCreateReplayState(userId);
+        if (replayState.getReplayDate() != null && !replayState.getReplayDate().isBlank()) {
+            return LocalDate.parse(replayState.getReplayDate());
+        }
+        return LocalDate.now();
+    }
+
+    private void syncUserReplayDates(LocalDate currentDate) {
+        List<SimReplayStateEntity> states = simReplayStateRepository.findAll();
+        for (SimReplayStateEntity state : states) {
+            state.setReplayDate(currentDate.toString());
+            state.setRunning(true);
+        }
+        if (!states.isEmpty()) {
+            simReplayStateRepository.saveAll(states);
+        }
+    }
+
+    private void processPendingOrdersForAllUsers(LocalDate valuationDate) {
+        List<SimPendingOrderEntity> pendingOrders = simPendingOrderRepository.findAll();
+        if (pendingOrders.isEmpty()) {
+            return;
+        }
+        Set<Long> userIds = new HashSet<>();
+        for (SimPendingOrderEntity pendingOrder : pendingOrders) {
+            if (pendingOrder.getUserId() != null) {
+                userIds.add(pendingOrder.getUserId());
+            }
+        }
+        for (Long userId : userIds) {
+            processPendingOrders(userId, valuationDate);
+        }
+    }
+
+    private SimLeagueStateEntity getOrCreateLeagueState() {
+        return simLeagueStateRepository.findByLeagueCode(DEFAULT_LEAGUE_CODE).orElseGet(() -> {
+            SimLeagueStateEntity entity = new SimLeagueStateEntity();
+            entity.setLeagueCode(DEFAULT_LEAGUE_CODE);
+            entity.setAnchorDate(null);
+            entity.setCurrentDate(null);
+            entity.setRunning(false);
+            return simLeagueStateRepository.save(entity);
+        });
     }
 
     private SimAccountEntity getOrCreateAccount(Long userId) {
@@ -361,6 +454,7 @@ public class SimulationService {
             SimReplayStateEntity entity = new SimReplayStateEntity();
             entity.setUserId(userId);
             entity.setReplayDate(null);
+            entity.setAnchorDate(null);
             entity.setRunning(false);
             return simReplayStateRepository.save(entity);
         });
@@ -381,7 +475,7 @@ public class SimulationService {
 
     private String normalizeSide(String side) {
         if (side == null) {
-            throw new IllegalArgumentException("주문 구분(side)은 필수입니다.");
+            throw new IllegalArgumentException("주문 구분(side)이 필요합니다.");
         }
         String normalized = side.trim().toUpperCase();
         if (!"BUY".equals(normalized) && !"SELL".equals(normalized)) {
@@ -406,7 +500,7 @@ public class SimulationService {
             return null;
         }
         if (limitPrice == null || !Double.isFinite(limitPrice) || limitPrice <= 0) {
-            throw new IllegalArgumentException("지정가 주문은 limitPrice(0 초과)가 필요합니다.");
+            throw new IllegalArgumentException("지정가 주문은 limitPrice가 필요합니다.");
         }
         return round2(limitPrice);
     }
@@ -425,7 +519,7 @@ public class SimulationService {
         if ("BUY".equals(side)) {
             double worstCaseAmount = limitPrice * qty;
             if (account.getCash() < worstCaseAmount) {
-                throw new IllegalArgumentException("잔고가 부족합니다.");
+                throw new IllegalArgumentException("예수금이 부족합니다.");
             }
             return;
         }
@@ -440,7 +534,7 @@ public class SimulationService {
         double amount = price * qty;
         if ("BUY".equals(side)) {
             if (account.getCash() < amount) {
-                throw new IllegalArgumentException("잔고가 부족합니다.");
+                throw new IllegalArgumentException("예수금이 부족합니다.");
             }
             SimPositionEntity position = simPositionRepository.findByUserIdAndCode(userId, code).orElse(null);
             if (position == null) {
@@ -494,7 +588,6 @@ public class SimulationService {
                 accountChanged = true;
                 simPendingOrderRepository.delete(order);
             } catch (IllegalArgumentException e) {
-                // Cannot execute anymore (insufficient cash/quantity), so cancel this pending order.
                 simPendingOrderRepository.delete(order);
             }
         }
@@ -510,7 +603,7 @@ public class SimulationService {
         try {
             return LocalDate.parse(startDate.trim());
         } catch (Exception e) {
-            throw new IllegalArgumentException("startDate는 yyyy-MM-dd 형식이어야 합니다.");
+            throw new IllegalArgumentException("startDate must be yyyy-MM-dd");
         }
     }
 

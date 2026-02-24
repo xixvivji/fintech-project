@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: fintech-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fintech}
+      POSTGRES_USER: ${POSTGRES_USER:-fintech}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-password}
+      TZ: Asia/Seoul
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks:
+      - fintech-net
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: fintech-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Seoul
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-fintech}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-fintech}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-change-this-password}
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-change-me-prod-secret}
+      KIS_APP_KEY: ${KIS_APP_KEY:-}
+      KIS_APP_SECRET: ${KIS_APP_SECRET:-}
+      KIS_URL_BASE: ${KIS_URL_BASE:-https://openapivts.koreainvestment.com:29443}
+      KIS_TR_ID: ${KIS_TR_ID:-FHKST03010100}
+    expose:
+      - "8080"
+    networks:
+      - fintech-net
+
+  nginx:
+    build:
+      context: .
+      dockerfile: deploy/nginx/Dockerfile
+    container_name: fintech-nginx
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    networks:
+      - fintech-net
+
+volumes:
+  postgres_data:
+
+networks:
+  fintech-net:

@@ -20,4 +20,17 @@ public class StockController {
     ) {
         return stockService.getDailyChart(code, months, endDate);
     }
+
+    @PostMapping("/backfill")
+    public StockBackfillResponseDto backfill(@RequestBody StockBackfillRequestDto request) {
+        if (request == null) {
+            throw new IllegalArgumentException("request is required.");
+        }
+        return stockService.backfillDailyPrices(
+                request.getCodes(),
+                request.getStartDate(),
+                request.getEndDate(),
+                request.getChunkMonths()
+        );
+    }
 }

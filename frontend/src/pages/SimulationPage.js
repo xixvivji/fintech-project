@@ -1,0 +1,447 @@
+import React from "react";
+import StockChartCard from "../components/StockChartCard";
+
+export default function SimulationPage(props) {
+  const {
+    apiBaseUrl,
+    isLoggedIn,
+    replayLoading,
+    simLoading,
+    startReplay,
+    pauseReplay,
+    resetSimulation,
+    leagueState,
+    replayState,
+    portfolio,
+    tradeCode,
+    setTradeCode,
+    tradeQty,
+    setTradeQty,
+    tradeableCodes,
+    getStockNameByCode,
+    tradeMessage,
+    chartEndDate,
+    setSimSelectedPrice,
+    simSelectedPrice,
+    selectedTradeHolding,
+    simOrderTab,
+    setSimOrderTab,
+    pendingLoading,
+    pendingOrders,
+    cancelPendingOrder,
+    executionsLoading,
+    filteredExecutions,
+    executionFilterSide,
+    setExecutionFilterSide,
+    executionFilterCode,
+    setExecutionFilterCode,
+    rankingsLoading,
+    rankings,
+    rankingRowsTop10WithMe,
+    rankingPeriod,
+    setRankingPeriod,
+    openRankingUserSummary,
+    rankingUserSummary,
+    setRankingUserSummary,
+    rankingUserSummaryLoading,
+    fmt,
+    fmtDateTime,
+    fmtSigned,
+    getHoldingReturnRate,
+    holdingOrderQtys,
+    setHoldingOrderQtys,
+    setHoldingQuickQty,
+    getHoldingOrderQty,
+    openOrderConfirm,
+    orderConfirmDraft,
+    setOrderConfirmDraft,
+    confirmOrderDraft,
+  } = props;
+
+  if (!isLoggedIn) {
+    return (
+      <div className="app-card sim-page-card" style={cardWrap}>
+        <h3 style={{ marginTop: 0 }}>모의투자</h3>
+        <p style={{ margin: 0, color: "#64748b" }}>모의투자는 로그인 후 사용할 수 있습니다.</p>
+      </div>
+    );
+  }
+
+  const running = Boolean(leagueState?.running ?? replayState?.running);
+  const currentDate = leagueState?.currentDate || portfolio?.valuationDate || replayState?.currentDate || "-";
+  const anchorDate = leagueState?.anchorDate || replayState?.anchorDate || "-";
+
+  return (
+    <div className="app-card sim-page-card" style={cardWrap}>
+      <h3 style={{ marginTop: 0 }}>모의투자</h3>
+
+      <div className="app-toolbar-row" style={rowWrap}>
+        <span style={subtleText}>공용 리그 기준으로 자동 진행됩니다.</span>
+        <button type="button" onClick={startReplay} disabled={replayLoading || simLoading}>
+          리플레이 시작
+        </button>
+        <button type="button" onClick={pauseReplay} disabled={replayLoading || simLoading}>
+          일시정지
+        </button>
+        <button type="button" onClick={resetSimulation} disabled={replayLoading || simLoading}>
+          초기화
+        </button>
+      </div>
+
+      <div className="app-toolbar-row" style={{ ...rowWrap, marginTop: 8 }}>
+        <span>공용 리그 상태: {running ? "진행 중" : "정지"}</span>
+        <span>공용 기준일: {currentDate}</span>
+        <span>시작일: {anchorDate}</span>
+        {leagueState?.tickSeconds ? <span>틱: {leagueState.tickSeconds}초 / {leagueState.stepDays || 1}일</span> : null}
+      </div>
+
+      <div className="app-toolbar-row" style={{ ...rowWrap, marginTop: 12 }}>
+        <label>종목</label>
+        <select value={tradeCode} onChange={(e) => setTradeCode(e.target.value)} disabled={simLoading}>
+          {tradeableCodes.map((code) => (
+            <option key={code} value={code}>
+              {getStockNameByCode(code)} ({code})
+            </option>
+          ))}
+        </select>
+        <label>수량</label>
+        <input type="number" min="1" value={tradeQty} onChange={(e) => setTradeQty(e.target.value)} style={{ width: 90 }} />
+        <button type="button" className="sim-holding-buy-btn" disabled={simLoading} onClick={() => openOrderConfirm("BUY")}>
+          매수
+        </button>
+        <button type="button" className="sim-holding-sell-btn" disabled={simLoading} onClick={() => openOrderConfirm("SELL")}>
+          매도
+        </button>
+      </div>
+
+      {tradeMessage && <div style={{ marginTop: 10, color: "#334155" }}>{tradeMessage}</div>}
+
+      {tradeCode && (
+        <div className="sim-selected-stock-card" style={{ marginTop: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <strong>
+              {getStockNameByCode(tradeCode)} ({tradeCode})
+            </strong>
+            <span>
+              현재가:{" "}
+              {simSelectedPrice?.price
+                ? `${fmt(Number(simSelectedPrice.price))}원`
+                : selectedTradeHolding?.currentPrice
+                  ? `${fmt(Number(selectedTradeHolding.currentPrice))}원`
+                  : "-"}
+            </span>
+          </div>
+          <StockChartCard
+            apiBaseUrl={apiBaseUrl}
+            code={tradeCode}
+            months={6}
+            endDate={chartEndDate}
+            height={220}
+            onLatestPriceChange={setSimSelectedPrice}
+          />
+        </div>
+      )}
+
+      <div className="sim-order-tabs" style={{ marginTop: 12 }}>
+        <button type="button" className={simOrderTab === "pending" ? "sim-order-tab active" : "sim-order-tab"} onClick={() => setSimOrderTab("pending")}>
+          미체결 주문
+        </button>
+        <button type="button" className={simOrderTab === "executions" ? "sim-order-tab active" : "sim-order-tab"} onClick={() => setSimOrderTab("executions")}>
+          체결내역
+        </button>
+        <button type="button" className={simOrderTab === "rankings" ? "sim-order-tab active" : "sim-order-tab"} onClick={() => setSimOrderTab("rankings")}>
+          수익률 랭킹
+        </button>
+      </div>
+
+      <div className="sim-order-panel">
+        {simOrderTab === "pending" && (
+          <>
+            {pendingLoading && <div>불러오는 중...</div>}
+            {!pendingLoading && pendingOrders.length === 0 && <div>미체결 주문이 없습니다.</div>}
+            {!pendingLoading && pendingOrders.length > 0 && (
+              <TableWrap>
+                <table className="sim-order-table">
+                  <thead>
+                    <tr>
+                      <th>구분</th>
+                      <th>종목</th>
+                      <th>수량</th>
+                      <th>주문가</th>
+                      <th>접수시간</th>
+                      <th>액션</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pendingOrders.map((o) => (
+                      <tr key={o.id}>
+                        <td className={o.side === "BUY" ? "up" : "down"}>{o.side === "BUY" ? "매수" : "매도"}</td>
+                        <td>{getStockNameByCode(o.code)} ({o.code})</td>
+                        <td className="num">{fmt(o.quantity)}주</td>
+                        <td className="num">{fmt(o.limitPrice || 0)}원</td>
+                        <td>{fmtDateTime(o.createdAt)}</td>
+                        <td>
+                          <button type="button" className="sim-order-mini-btn" onClick={() => cancelPendingOrder(o.id)}>
+                            취소
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableWrap>
+            )}
+          </>
+        )}
+
+        {simOrderTab === "executions" && (
+          <>
+            <div className="sim-order-toolbar">
+              <select value={executionFilterSide} onChange={(e) => setExecutionFilterSide(e.target.value)} className="sim-order-filter">
+                <option value="ALL">전체</option>
+                <option value="BUY">매수</option>
+                <option value="SELL">매도</option>
+              </select>
+              <select value={executionFilterCode} onChange={(e) => setExecutionFilterCode(e.target.value)} className="sim-order-filter">
+                <option value="">전체 종목</option>
+                {tradeableCodes.map((code) => (
+                  <option key={`ef-${code}`} value={code}>
+                    {getStockNameByCode(code)} ({code})
+                  </option>
+                ))}
+              </select>
+            </div>
+            {executionsLoading && <div>불러오는 중...</div>}
+            {!executionsLoading && filteredExecutions.length === 0 && <div>체결내역이 없습니다.</div>}
+            {!executionsLoading && filteredExecutions.length > 0 && (
+              <TableWrap>
+                <table className="sim-order-table">
+                  <thead>
+                    <tr>
+                      <th>구분</th>
+                      <th>종목</th>
+                      <th>수량</th>
+                      <th>체결가</th>
+                      <th>금액</th>
+                      <th>기준일</th>
+                      <th>체결시간</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredExecutions.map((o) => (
+                      <tr key={o.id}>
+                        <td className={o.side === "BUY" ? "up" : "down"}>{o.side === "BUY" ? "매수" : "매도"}</td>
+                        <td>{getStockNameByCode(o.code)} ({o.code})</td>
+                        <td className="num">{fmt(o.quantity)}주</td>
+                        <td className="num">{fmt(o.price)}원</td>
+                        <td className="num">{fmt(o.amount)}원</td>
+                        <td>{o.valuationDate || "-"}</td>
+                        <td>{fmtDateTime(o.executedAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableWrap>
+            )}
+          </>
+        )}
+
+        {simOrderTab === "rankings" && (
+          <>
+            <div className="sim-order-toolbar">
+              <select value={rankingPeriod} onChange={(e) => setRankingPeriod(e.target.value)} className="sim-order-filter">
+                <option value="ALL">전체</option>
+                <option value="TODAY">오늘 (준비중)</option>
+                <option value="7D">최근 7일 (준비중)</option>
+              </select>
+            </div>
+            {rankingPeriod !== "ALL" && (
+              <div style={{ color: "#64748b", fontSize: 12 }}>기간 랭킹은 스냅샷 데이터 적용 후 활성화 예정입니다.</div>
+            )}
+            {rankingsLoading && <div>불러오는 중...</div>}
+            {!rankingsLoading && rankings.length === 0 && <div>랭킹 데이터가 없습니다.</div>}
+            {!rankingsLoading && rankings.length > 0 && (
+              <TableWrap>
+                <table className="sim-order-table">
+                  <thead>
+                    <tr>
+                      <th>순위</th>
+                      <th>사용자</th>
+                      <th>수익률</th>
+                      <th>총자산</th>
+                      <th>실현손익</th>
+                      <th>미실현손익</th>
+                      <th>기준일</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rankingRowsTop10WithMe.map((r) => (
+                      <tr key={`ranking-${r.userId}`} className={r.me ? "sim-ranking-me-row" : ""}>
+                        <td className="num">{fmt(Number(r.rank))}</td>
+                        <td>
+                          <button type="button" className="sim-ranking-name-btn" onClick={() => openRankingUserSummary(r.userId)} disabled={rankingUserSummaryLoading}>
+                            {r.me ? `${r.userName} (나)` : r.userName}
+                          </button>
+                        </td>
+                        <td className={`num ${Number(r.returnRate) >= 0 ? "up" : "down"}`}>
+                          {Number(r.returnRate) > 0 ? "+" : ""}
+                          {Number(r.returnRate).toFixed(2)}%
+                        </td>
+                        <td className="num">{fmt(Number(r.totalValue))}원</td>
+                        <td className={`num ${Number(r.realizedPnl) >= 0 ? "up" : "down"}`}>{fmtSigned(Number(r.realizedPnl))}원</td>
+                        <td className={`num ${Number(r.unrealizedPnl) >= 0 ? "up" : "down"}`}>{fmtSigned(Number(r.unrealizedPnl))}원</td>
+                        <td>{r.valuationDate || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableWrap>
+            )}
+          </>
+        )}
+      </div>
+
+      {portfolio && (
+        <div style={{ fontSize: 14, color: "#334155", marginTop: 12 }}>
+          예수금: {fmt(portfolio.cash)}원 | 평가금액: {fmt(portfolio.marketValue)}원 | 총자산: {fmt(portfolio.totalValue)}원 | 실현손익:{" "}
+          {fmtSigned(portfolio.realizedPnl)}원 | 미실현손익: {fmtSigned(portfolio.unrealizedPnl)}원
+        </div>
+      )}
+
+      {portfolio?.holdings?.length > 0 && (
+        <div className="sim-holdings-list">
+          <div className="sim-holdings-title">보유 종목</div>
+          <div className="sim-holdings-table-wrap">
+            <table className="sim-holdings-table">
+              <thead>
+                <tr>
+                  <th>종목</th>
+                  <th>보유수량</th>
+                  <th>평단가</th>
+                  <th>현재가</th>
+                  <th>평가금액</th>
+                  <th>평가손익</th>
+                  <th>수익률</th>
+                  <th>주문</th>
+                </tr>
+              </thead>
+              <tbody>
+                {portfolio.holdings.map((h) => {
+                  const holdQty = Math.max(1, Number(h.quantity) || 1);
+                  const unrealizedPnl = Number(h.unrealizedPnl) || 0;
+                  const returnRate = getHoldingReturnRate(h);
+                  const isUp = unrealizedPnl >= 0;
+                  return (
+                    <tr key={`${h.code}-${h.quantity}-${h.avgPrice}`}>
+                      <td>
+                        <div className="sim-holding-code">{getStockNameByCode(h.code)}</div>
+                        <div className="sim-holding-meta">{h.code}</div>
+                      </td>
+                      <td className="num">{fmt(Number(h.quantity) || 0)}주</td>
+                      <td className="num">{fmt(Number(h.avgPrice) || 0)}원</td>
+                      <td className="num">{fmt(Number(h.currentPrice) || 0)}원</td>
+                      <td className="num">{fmt(Number(h.marketValue) || 0)}원</td>
+                      <td className={`num ${isUp ? "up" : "down"}`}>{fmtSigned(unrealizedPnl)}원</td>
+                      <td className={`num ${isUp ? "up" : "down"}`}>
+                        {returnRate > 0 ? "+" : ""}
+                        {returnRate.toFixed(2)}%
+                      </td>
+                      <td>
+                        <div className="sim-holding-actions">
+                          <input
+                            type="number"
+                            min="1"
+                            max={holdQty}
+                            className="sim-holding-qty-input"
+                            value={holdingOrderQtys[h.code] ?? 1}
+                            onChange={(e) => setHoldingOrderQtys((prev) => ({ ...prev, [h.code]: e.target.value }))}
+                          />
+                          <button type="button" className="sim-holding-quick-btn" onClick={() => setHoldingQuickQty(h.code, holdQty, 0.25)}>25%</button>
+                          <button type="button" className="sim-holding-quick-btn" onClick={() => setHoldingQuickQty(h.code, holdQty, 0.5)}>50%</button>
+                          <button
+                            type="button"
+                            className="sim-holding-buy-btn"
+                            onClick={() => {
+                              const q = getHoldingOrderQty(h.code);
+                              openOrderConfirm("BUY", { code: h.code, quantity: q });
+                            }}
+                          >
+                            매수
+                          </button>
+                          <button
+                            type="button"
+                            className="sim-holding-sell-btn"
+                            onClick={() => {
+                              const q = Math.min(getHoldingOrderQty(h.code), holdQty);
+                              openOrderConfirm("SELL", { code: h.code, quantity: q });
+                            }}
+                          >
+                            매도
+                          </button>
+                          <button type="button" className="sim-holding-all-sell-btn" onClick={() => openOrderConfirm("SELL", { code: h.code, quantity: holdQty })}>
+                            전량
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {orderConfirmDraft && (
+        <div className="sim-modal-backdrop" role="presentation" onClick={() => setOrderConfirmDraft(null)}>
+          <div className="sim-confirm-modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <div className="sim-confirm-title">주문 확인</div>
+            <div className="sim-confirm-body">
+              <div><strong>구분</strong> {orderConfirmDraft.side === "BUY" ? "매수" : "매도"}</div>
+              <div><strong>종목</strong> {getStockNameByCode(orderConfirmDraft.code)} ({orderConfirmDraft.code})</div>
+              <div><strong>수량</strong> {fmt(orderConfirmDraft.quantity)}주</div>
+            </div>
+            <div className="sim-confirm-actions">
+              <button type="button" className="sim-order-mini-btn" onClick={() => setOrderConfirmDraft(null)}>취소</button>
+              <button type="button" className={orderConfirmDraft.side === "BUY" ? "sim-holding-buy-btn" : "sim-holding-sell-btn"} onClick={confirmOrderDraft} disabled={simLoading}>
+                확인
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {rankingUserSummary && (
+        <div className="sim-modal-backdrop" role="presentation" onClick={() => setRankingUserSummary(null)}>
+          <div className="sim-confirm-modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <div className="sim-confirm-title">포트폴리오 요약</div>
+            <div className="sim-confirm-body">
+              <div><strong>사용자</strong> {rankingUserSummary.userName}</div>
+              <div><strong>기준일</strong> {rankingUserSummary.portfolio?.valuationDate || "-"}</div>
+              <div><strong>총자산</strong> {fmt(Number(rankingUserSummary.portfolio?.totalValue || 0))}원</div>
+              <div><strong>예수금</strong> {fmt(Number(rankingUserSummary.portfolio?.cash || 0))}원</div>
+            </div>
+            <div className="sim-confirm-actions">
+              <button type="button" className="sim-order-mini-btn" onClick={() => setRankingUserSummary(null)}>닫기</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TableWrap({ children }) {
+  return <div className="sim-order-table-wrap">{children}</div>;
+}
+
+const cardWrap = {
+  marginTop: 20,
+  marginBottom: 20,
+  padding: 15,
+  background: "#fff",
+  borderRadius: 10,
+  border: "1px solid #e5e7eb",
+};
+const rowWrap = { display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" };
+const subtleText = { color: "#64748b", fontSize: 13 };

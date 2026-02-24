@@ -1,14 +1,27 @@
 package com.example.backend.stock;
 
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.client.RestTemplate;
+
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 @Service
 public class StockService {
@@ -17,6 +30,8 @@ public class StockService {
     private static final int MAX_CHUNK_REQUESTS = 30;
     private static final long CHART_CACHE_TTL_MS = 20_000L;
     private static final long PRICE_SERIES_CACHE_TTL_MS = 600_000L;
+
+    private final DailyPriceRepository dailyPriceRepository;
 
     @Value("${kis.app-key}")
     private String appKey;
@@ -37,6 +52,10 @@ public class StockService {
     private long lastKisRequestAt = 0L;
     private final ConcurrentHashMap<String, CacheEntry> chartCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, PriceSeriesCacheEntry> priceSeriesCache = new ConcurrentHashMap<>();
+
+    public StockService(DailyPriceRepository dailyPriceRepository) {
+        this.dailyPriceRepository = dailyPriceRepository;
+    }
 
     private void fetchAccessToken() {
         validateConfig();
@@ -63,11 +82,10 @@ public class StockService {
             int expiresIn = tokenResponse.getExpires_in();
             long ttlMs = Math.max(30_000L, (long) expiresIn * 1000L);
             this.tokenExpiresAtMs = System.currentTimeMillis() + ttlMs;
-            System.out.println(">>> [성공] 토큰 발급 완료");
         } catch (RestClientResponseException e) {
-            throw new IllegalStateException("KIS 토큰 발급 실패: HTTP " + e.getStatusCode() + " - " + e.getResponseBodyAsString(), e);
+            throw new IllegalStateException("KIS token fetch failed: HTTP " + e.getStatusCode() + " - " + e.getResponseBodyAsString(), e);
         } catch (Exception e) {
-            throw new IllegalStateException("KIS 토큰 발급 실패: " + e.getMessage(), e);
+            throw new IllegalStateException("KIS token fetch failed: " + e.getMessage(), e);
         }
     }
 
@@ -76,13 +94,148 @@ public class StockService {
     }
 
     public List<ChartDataDto> getDailyChart(String stockCode, int months, String endDate) {
+        String normalizedCode = normalizeCode(stockCode);
         int rangeMonths = Math.max(1, Math.min(months, 120));
         LocalDate endLocalDate = parseEndDateOrToday(endDate);
+        LocalDate startLocalDate = endLocalDate.minusMonths(rangeMonths);
         String endDateKey = endLocalDate.toString();
-        String cacheKey = stockCode + ":" + rangeMonths + ":" + endDateKey;
+        String cacheKey = normalizedCode + ":" + rangeMonths + ":" + endDateKey;
+
         List<ChartDataDto> cached = getCachedChart(cacheKey);
         if (cached != null) return cached;
 
+        List<ChartDataDto> fromDb = getChartFromDb(normalizedCode, startLocalDate, endLocalDate);
+        if (!fromDb.isEmpty()) {
+            putCachedChart(cacheKey, fromDb);
+            return fromDb;
+        }
+
+        List<ChartDataDto> fromKis = fetchDailyChartFromKis(normalizedCode, rangeMonths, endLocalDate);
+        if (!fromKis.isEmpty()) {
+            saveDailyChartToDb(normalizedCode, fromKis);
+        }
+        putCachedChart(cacheKey, fromKis);
+        return fromKis;
+    }
+
+    public double getLatestClosePrice(String stockCode) {
+        String normalizedCode = normalizeCode(stockCode);
+        return dailyPriceRepository.findTopByCodeOrderByTradeDateDesc(normalizedCode)
+                .map(DailyPriceEntity::getClosePrice)
+                .orElseGet(() -> {
+                    List<ChartDataDto> chart = getDailyChart(normalizedCode, 1);
+                    if (chart.isEmpty()) {
+                        throw new IllegalStateException("Latest close price not available for " + normalizedCode);
+                    }
+                    return chart.get(chart.size() - 1).getClose();
+                });
+    }
+
+    public double getClosePriceOnOrBefore(String stockCode, LocalDate targetDate) {
+        if (targetDate == null) {
+            throw new IllegalArgumentException("targetDate is required.");
+        }
+        String normalizedCode = normalizeCode(stockCode);
+
+        if (dailyPriceRepository != null) {
+            var row = dailyPriceRepository.findTopByCodeAndTradeDateLessThanEqualOrderByTradeDateDesc(normalizedCode, targetDate);
+            if (row.isPresent()) {
+                return row.get().getClosePrice();
+            }
+        }
+
+        List<ChartDataDto> chart = getCachedPriceSeries(normalizedCode);
+        String target = targetDate.toString();
+        for (int i = chart.size() - 1; i >= 0; i--) {
+            ChartDataDto candle = chart.get(i);
+            if (candle.getTime().compareTo(target) <= 0) {
+                return candle.getClose();
+            }
+        }
+        throw new IllegalStateException("No close price on or before " + target + " for " + normalizedCode);
+    }
+
+    @Transactional
+    public void saveDailyChartToDb(String stockCode, List<ChartDataDto> chartData) {
+        if (chartData == null || chartData.isEmpty()) return;
+        String normalizedCode = normalizeCode(stockCode);
+
+        LocalDate minDate = null;
+        LocalDate maxDate = null;
+        for (ChartDataDto dto : chartData) {
+            LocalDate date = LocalDate.parse(dto.getTime());
+            if (minDate == null || date.isBefore(minDate)) minDate = date;
+            if (maxDate == null || date.isAfter(maxDate)) maxDate = date;
+        }
+        if (minDate == null || maxDate == null) return;
+
+        Map<LocalDate, DailyPriceEntity> existingByDate = dailyPriceRepository
+                .findByCodeAndTradeDateBetweenOrderByTradeDateAsc(normalizedCode, minDate, maxDate)
+                .stream()
+                .collect(Collectors.toMap(DailyPriceEntity::getTradeDate, e -> e));
+
+        List<DailyPriceEntity> toSave = new ArrayList<>();
+        for (ChartDataDto dto : chartData) {
+            LocalDate date = LocalDate.parse(dto.getTime());
+            DailyPriceEntity row = existingByDate.getOrDefault(date, new DailyPriceEntity());
+            row.setCode(normalizedCode);
+            row.setTradeDate(date);
+            row.setOpenPrice(dto.getOpen());
+            row.setHighPrice(dto.getHigh());
+            row.setLowPrice(dto.getLow());
+            row.setClosePrice(dto.getClose());
+            if (row.getVolume() == null) {
+                row.setVolume(null);
+            }
+            toSave.add(row);
+        }
+        dailyPriceRepository.saveAll(toSave);
+        priceSeriesCache.remove(normalizedCode);
+    }
+
+    @Transactional
+    public StockBackfillResponseDto backfillDailyPrices(List<String> codes, String startDate, String endDate, Integer chunkMonths) {
+        if (codes == null || codes.isEmpty()) {
+            throw new IllegalArgumentException("codes is required.");
+        }
+        LocalDate start = LocalDate.parse(startDate);
+        LocalDate end = LocalDate.parse(endDate);
+        if (end.isBefore(start)) {
+            throw new IllegalArgumentException("endDate must be on or after startDate.");
+        }
+        int chunk = Math.max(1, Math.min(chunkMonths == null ? 6 : chunkMonths, 24));
+
+        int requested = codes.size();
+        int processed = 0;
+        int chunkRequests = 0;
+        for (String code : codes) {
+            String normalizedCode = normalizeCode(code);
+            LocalDate cursorEnd = end;
+            while (!cursorEnd.isBefore(start)) {
+                getDailyChart(normalizedCode, chunk, cursorEnd.toString());
+                chunkRequests++;
+                cursorEnd = cursorEnd.minusMonths(chunk);
+            }
+            processed++;
+            priceSeriesCache.remove(normalizedCode);
+        }
+
+        return new StockBackfillResponseDto(requested, processed, chunkRequests, start.toString(), end.toString());
+    }
+
+    private List<ChartDataDto> getChartFromDb(String code, LocalDate startDate, LocalDate endDate) {
+        List<DailyPriceEntity> rows = dailyPriceRepository.findByCodeAndTradeDateBetweenOrderByTradeDateAsc(code, startDate, endDate);
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        List<ChartDataDto> result = new ArrayList<>(rows.size());
+        for (DailyPriceEntity row : rows) {
+            result.add(toChartDto(row));
+        }
+        return result;
+    }
+
+    private List<ChartDataDto> fetchDailyChartFromKis(String stockCode, int months, LocalDate endLocalDate) {
         ensureAccessToken();
 
         RestTemplate restTemplate = new RestTemplate();
@@ -93,12 +246,8 @@ public class StockService {
         headers.set("appsecret", appSecret.trim());
         headers.set("tr_id", trId);
 
-
-        // 1. 오늘 날짜 (종료일)
         String today = endLocalDate.format(DateTimeFormatter.ofPattern("yyyyMMdd"));
-        // 2. 종료일 기준 N개월 전 날짜 (시작일)
-        String startDate = endLocalDate.minusMonths(rangeMonths).format(DateTimeFormatter.ofPattern("yyyyMMdd"));
-        // ------------------------------
+        String startDate = endLocalDate.minusMonths(months).format(DateTimeFormatter.ofPattern("yyyyMMdd"));
 
         List<ChartDataDto> chartData = new ArrayList<>();
         Set<String> seenDates = new HashSet<>();
@@ -124,15 +273,8 @@ public class StockService {
                 if (open == null || high == null || low == null || close == null) continue;
 
                 if (seenDates.add(formattedDate)) {
-                    chartData.add(new ChartDataDto(
-                            formattedDate,
-                            open,
-                            high,
-                            low,
-                            close
-                    ));
+                    chartData.add(new ChartDataDto(formattedDate, open, high, low, close));
                 }
-
                 if (oldestInChunk == null || rawDate.compareTo(oldestInChunk) < 0) {
                     oldestInChunk = rawDate;
                 }
@@ -146,32 +288,7 @@ public class StockService {
         }
 
         chartData.sort(Comparator.comparing(ChartDataDto::getTime));
-        putCachedChart(cacheKey, chartData);
         return chartData;
-    }
-
-    public double getLatestClosePrice(String stockCode) {
-        List<ChartDataDto> chart = getDailyChart(stockCode, 1);
-        if (chart.isEmpty()) {
-            throw new IllegalStateException("현재가 조회 실패: 차트 데이터가 없습니다.");
-        }
-        return chart.get(chart.size() - 1).getClose();
-    }
-
-    public double getClosePriceOnOrBefore(String stockCode, LocalDate targetDate) {
-        if (targetDate == null) {
-            throw new IllegalArgumentException("targetDate는 필수입니다.");
-        }
-        List<ChartDataDto> chart = getCachedPriceSeries(stockCode);
-        String target = targetDate.toString();
-
-        for (int i = chart.size() - 1; i >= 0; i--) {
-            ChartDataDto candle = chart.get(i);
-            if (candle.getTime().compareTo(target) <= 0) {
-                return candle.getClose();
-            }
-        }
-        throw new IllegalStateException("해당 날짜 이전 시세가 없습니다: " + stockCode + " @ " + target);
     }
 
     private void ensureAccessToken() {
@@ -210,12 +327,12 @@ public class StockService {
 
         Map<String, Object> responseBody = response.getBody();
         if (responseBody == null) {
-            throw new IllegalStateException("KIS 차트 조회 실패: 응답 본문이 비어 있습니다.");
+            throw new IllegalStateException("KIS chart response body is empty.");
         }
 
         Object outputObj = responseBody.get("output2");
         if (!(outputObj instanceof List<?>)) {
-            String msg = "KIS 차트 조회 실패: output2 없음";
+            String msg = "KIS chart response output2 is missing";
             Object msg1 = responseBody.get("msg1");
             if (msg1 != null) {
                 msg += " (" + msg1 + ")";
@@ -236,10 +353,10 @@ public class StockService {
                     sleepQuietly(600L * attempt);
                     continue;
                 }
-                throw new IllegalStateException("KIS 차트 조회 실패: HTTP " + e.getStatusCode() + " - " + body, e);
+                throw new IllegalStateException("KIS chart request failed: HTTP " + e.getStatusCode() + " - " + body, e);
             }
         }
-        throw new IllegalStateException("KIS 차트 조회 실패: 재시도 횟수 초과");
+        throw new IllegalStateException("KIS chart request failed after retries");
     }
 
     private ResponseEntity<Map> throttledExchange(RestTemplate restTemplate, String url, HttpEntity<String> entity) {
@@ -259,7 +376,7 @@ public class StockService {
 
     private boolean isRateLimitError(String responseBody) {
         if (responseBody == null || responseBody.isBlank()) return false;
-        return responseBody.contains("EGW00201") || responseBody.contains("초당 거래건수");
+        return responseBody.contains("EGW00201");
     }
 
     private void sleepQuietly(long millis) {
@@ -267,7 +384,7 @@ public class StockService {
             Thread.sleep(millis);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("요청 대기 중 인터럽트 발생", e);
+            throw new IllegalStateException("Interrupted while waiting for KIS request throttle", e);
         }
     }
 
@@ -287,8 +404,15 @@ public class StockService {
         try {
             return LocalDate.parse(endDate.trim());
         } catch (Exception e) {
-            throw new IllegalArgumentException("endDate는 yyyy-MM-dd 형식이어야 합니다.");
+            throw new IllegalArgumentException("endDate must be yyyy-MM-dd");
         }
+    }
+
+    private String normalizeCode(String stockCode) {
+        if (stockCode == null || !stockCode.trim().matches("\\d{6}")) {
+            throw new IllegalArgumentException("stockCode must be 6 digits");
+        }
+        return stockCode.trim();
     }
 
     private List<ChartDataDto> getCachedChart(String cacheKey) {
@@ -314,10 +438,30 @@ public class StockService {
             return entry.data;
         }
 
-        List<ChartDataDto> fetched = getDailyChart(stockCode, 120, null);
-        List<ChartDataDto> immutableCopy = List.copyOf(fetched);
+        List<ChartDataDto> fromDb = dailyPriceRepository.findByCodeOrderByTradeDateAsc(stockCode)
+                .stream()
+                .map(this::toChartDto)
+                .toList();
+        List<ChartDataDto> source;
+        if (!fromDb.isEmpty()) {
+            source = fromDb;
+        } else {
+            source = getDailyChart(stockCode, 120, null);
+        }
+
+        List<ChartDataDto> immutableCopy = List.copyOf(source);
         priceSeriesCache.put(stockCode, new PriceSeriesCacheEntry(immutableCopy, now + PRICE_SERIES_CACHE_TTL_MS));
         return immutableCopy;
+    }
+
+    private ChartDataDto toChartDto(DailyPriceEntity row) {
+        return new ChartDataDto(
+                row.getTradeDate().toString(),
+                row.getOpenPrice(),
+                row.getHighPrice(),
+                row.getLowPrice(),
+                row.getClosePrice()
+        );
     }
 
     private static class CacheEntry {
