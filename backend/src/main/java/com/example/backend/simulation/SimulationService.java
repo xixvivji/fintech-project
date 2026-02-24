@@ -1,5 +1,7 @@
 package com.example.backend.simulation;
 
+import com.example.backend.auth.UserEntity;
+import com.example.backend.auth.UserRepository;
 import com.example.backend.stock.StockService;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -26,6 +28,8 @@ public class SimulationService {
     private final SimPositionRepository simPositionRepository;
     private final SimReplayStateRepository simReplayStateRepository;
     private final SimPendingOrderRepository simPendingOrderRepository;
+    private final SimTradeExecutionRepository simTradeExecutionRepository;
+    private final UserRepository userRepository;
     private final ScheduledExecutorService replayExecutor = Executors.newSingleThreadScheduledExecutor();
 
     public SimulationService(
@@ -33,13 +37,17 @@ public class SimulationService {
             SimAccountRepository simAccountRepository,
             SimPositionRepository simPositionRepository,
             SimReplayStateRepository simReplayStateRepository,
-            SimPendingOrderRepository simPendingOrderRepository
+            SimPendingOrderRepository simPendingOrderRepository,
+            SimTradeExecutionRepository simTradeExecutionRepository,
+            UserRepository userRepository
     ) {
         this.stockService = stockService;
         this.simAccountRepository = simAccountRepository;
         this.simPositionRepository = simPositionRepository;
         this.simReplayStateRepository = simReplayStateRepository;
         this.simPendingOrderRepository = simPendingOrderRepository;
+        this.simTradeExecutionRepository = simTradeExecutionRepository;
+        this.userRepository = userRepository;
     }
 
     @PostConstruct
@@ -122,6 +130,7 @@ public class SimulationService {
             executeTrade(userId, account, code, side, qty, price);
             simAccountRepository.save(account);
             double amount = round2(price * qty);
+            recordExecution(userId, code, side, orderType, limitPrice, qty, price, valuationDate);
             return new SimOrderResponseDto(
                     "FILLED",
                     "주문이 체결되었습니다.",
@@ -227,6 +236,72 @@ public class SimulationService {
         return result;
     }
 
+    @Transactional(readOnly = true)
+    public synchronized List<TradeExecutionDto> getTradeExecutions(Long userId) {
+        validateUserId(userId);
+        List<SimTradeExecutionEntity> rows = simTradeExecutionRepository.findByUserIdOrderByExecutedAtDesc(userId);
+        List<TradeExecutionDto> result = new ArrayList<>();
+        for (SimTradeExecutionEntity row : rows) {
+            result.add(new TradeExecutionDto(
+                    row.getId(),
+                    row.getCode(),
+                    row.getSide(),
+                    row.getOrderType(),
+                    row.getRequestedLimitPrice(),
+                    row.getQuantity(),
+                    round2(row.getPrice()),
+                    round2(row.getAmount()),
+                    row.getValuationDate(),
+                    row.getExecutedAt()
+            ));
+        }
+        return result;
+    }
+
+    @Transactional(readOnly = true)
+    public synchronized List<SimRankingDto> getRankings(Long currentUserId) {
+        validateUserId(currentUserId);
+        List<UserEntity> users = userRepository.findAll();
+        List<SimRankingRow> rows = new ArrayList<>();
+        for (UserEntity user : users) {
+            if (user.getId() == null) continue;
+            PortfolioResponseDto p = getPortfolio(user.getId());
+            double returnRate = ((p.getTotalValue() - INITIAL_CASH) / INITIAL_CASH) * 100.0;
+            rows.add(new SimRankingRow(
+                    user.getId(),
+                    user.getName(),
+                    round2(p.getTotalValue()),
+                    round2(returnRate),
+                    round2(p.getRealizedPnl()),
+                    round2(p.getUnrealizedPnl()),
+                    p.getValuationDate()
+            ));
+        }
+
+        rows.sort(
+                Comparator.comparingDouble(SimRankingRow::returnRate).reversed()
+                        .thenComparingDouble(SimRankingRow::totalValue).reversed()
+                        .thenComparingLong(SimRankingRow::userId)
+        );
+
+        List<SimRankingDto> result = new ArrayList<>();
+        for (int i = 0; i < rows.size(); i++) {
+            SimRankingRow row = rows.get(i);
+            result.add(new SimRankingDto(
+                    i + 1,
+                    row.userId(),
+                    row.userName(),
+                    row.totalValue(),
+                    row.returnRate(),
+                    row.realizedPnl(),
+                    row.unrealizedPnl(),
+                    row.valuationDate(),
+                    row.userId().equals(currentUserId)
+            ));
+        }
+        return result;
+    }
+
     @Transactional
     public synchronized void cancelPendingOrder(Long userId, Long orderId) {
         validateUserId(userId);
@@ -251,6 +326,7 @@ public class SimulationService {
 
         simPositionRepository.deleteByUserId(userId);
         simPendingOrderRepository.deleteByUserId(userId);
+        simTradeExecutionRepository.deleteByUserId(userId);
 
         SimReplayStateEntity replayState = getOrCreateReplayState(userId);
         replayState.setReplayDate(null);
@@ -414,6 +490,7 @@ public class SimulationService {
             }
             try {
                 executeTrade(userId, account, order.getCode(), order.getSide(), order.getQuantity(), marketPrice);
+                recordExecution(userId, order.getCode(), order.getSide(), order.getOrderType(), order.getLimitPrice(), order.getQuantity(), marketPrice, valuationDate);
                 accountChanged = true;
                 simPendingOrderRepository.delete(order);
             } catch (IllegalArgumentException e) {
@@ -440,4 +517,29 @@ public class SimulationService {
     private double round2(double value) {
         return Math.round(value * 100.0) / 100.0;
     }
+
+    private void recordExecution(Long userId, String code, String side, String orderType, Double requestedLimitPrice, int qty, double price, LocalDate valuationDate) {
+        SimTradeExecutionEntity row = new SimTradeExecutionEntity();
+        row.setUserId(userId);
+        row.setCode(code);
+        row.setSide(side);
+        row.setOrderType(orderType);
+        row.setRequestedLimitPrice(requestedLimitPrice);
+        row.setQuantity(qty);
+        row.setPrice(round2(price));
+        row.setAmount(round2(price * qty));
+        row.setValuationDate(valuationDate == null ? null : valuationDate.toString());
+        row.setExecutedAt(System.currentTimeMillis());
+        simTradeExecutionRepository.save(row);
+    }
+
+    private record SimRankingRow(
+            Long userId,
+            String userName,
+            double totalValue,
+            double returnRate,
+            double realizedPnl,
+            double unrealizedPnl,
+            String valuationDate
+    ) {}
 }

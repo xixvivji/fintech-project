@@ -311,6 +311,193 @@ div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > button { g
   margin-top: 2px;
 }
 
+.sim-order-panel {
+  border: 1px solid #eceff1;
+  border-radius: 8px;
+  padding: 10px;
+  background: #fafbfc;
+}
+
+.sim-order-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.sim-order-filter {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #cfd8e3;
+  border-radius: 8px;
+  background: #fff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sim-order-table-wrap {
+  width: 100%;
+  overflow: auto;
+  border: 1px solid #dbe7f3;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.sim-order-table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+}
+
+.sim-order-table th,
+.sim-order-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #edf2f7;
+  white-space: nowrap;
+  vertical-align: middle;
+  font-size: 12px;
+}
+
+.sim-order-table thead th {
+  background: #f8fbff;
+  color: #4b5f78;
+  font-weight: 800;
+  text-align: left;
+}
+
+.sim-order-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.sim-order-table td.up {
+  color: #d92d20;
+  font-weight: 700;
+}
+
+.sim-order-table td.down {
+  color: #0f766e;
+  font-weight: 700;
+}
+
+.sim-order-mini-btn {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid #cfd8dc;
+  border-radius: 7px;
+  background: #fff;
+  color: #455a64;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.sim-order-mini-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.sim-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.38);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 1000;
+}
+
+.sim-confirm-modal {
+  width: min(420px, 100%);
+  background: #fff;
+  border-radius: 14px;
+  border: 1px solid #dbe7f3;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
+  padding: 14px;
+}
+
+.sim-confirm-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: #13253f;
+  margin-bottom: 10px;
+}
+
+.sim-confirm-body {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+  color: #334155;
+}
+
+.sim-confirm-body strong {
+  display: inline-block;
+  min-width: 58px;
+  color: #64748b;
+}
+
+.sim-confirm-actions {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.sim-holdings-table-wrap {
+  width: 100%;
+  overflow: auto;
+  border: 1px solid #dbe7f3;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.sim-holdings-table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+}
+
+.sim-holdings-table th,
+.sim-holdings-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #edf2f7;
+  vertical-align: middle;
+}
+
+.sim-holdings-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fbff;
+  color: #4b5f78;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.sim-holdings-table tbody tr:hover {
+  background: #f8fbff;
+}
+
+.sim-holdings-table td.num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.sim-holdings-table td.up {
+  color: #d92d20;
+  font-weight: 700;
+}
+
+.sim-holdings-table td.down {
+  color: #0f766e;
+  font-weight: 700;
+}
+
 .sim-holdings-title {
   font-size: 12px;
   font-weight: 800;
@@ -361,6 +548,32 @@ div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > button { g
   font-weight: 700;
   cursor: pointer;
   box-shadow: 0 6px 14px rgba(15, 118, 110, 0.2);
+}
+
+.sim-holding-all-sell-btn {
+  flex: 0 0 auto;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 9px;
+  background: #fff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.sim-holding-quick-btn {
+  flex: 0 0 auto;
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid #d7e2ee;
+  border-radius: 9px;
+  background: #f8fbff;
+  color: #3b5878;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
 }
 
 .sim-holding-actions {
@@ -414,6 +627,16 @@ div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > button { g
   box-shadow: none;
 }
 
+.sim-holding-all-sell-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.sim-holding-quick-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 @media (max-width: 640px) {
   .sim-holding-row {
     align-items: stretch;
@@ -422,16 +645,19 @@ div[style*='flex-direction: column']:has(> h3) > div:nth-of-type(2) > button { g
 
   .sim-holding-actions {
     width: 100%;
+    flex-wrap: wrap;
   }
 
   .sim-holding-qty-input {
-    flex: 1 1 70px;
+    flex: 1 1 100%;
     width: auto;
   }
 
   .sim-holding-buy-btn,
-  .sim-holding-sell-btn {
-    flex: 1 1 0;
+  .sim-holding-sell-btn,
+  .sim-holding-all-sell-btn,
+  .sim-holding-quick-btn {
+    flex: 1 1 calc(25% - 6px);
     width: 100%;
   }
 }

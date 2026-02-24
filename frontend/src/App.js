@@ -12,7 +12,6 @@ const PERIOD_OPTIONS = [
 ];
 const API_BASE_URL = 'http://localhost:8080';
 const AUTH_TOKEN_KEY = 'fintech_access_token';
-const DEFAULT_REPLAY_START_DATE = '2025-01-01';
 const INITIAL_CASH = 50000000;
 
 const STOCK_OPTIONS = [
@@ -111,7 +110,7 @@ function normalizeCandleData(rawData) {
     return Array.from(byTime.values()).sort((a, b) => a.time.localeCompare(b.time));
 }
 
-function StockChartCard({ code, months, requestDelayMs, endDate }) {
+function StockChartCard({ code, months, requestDelayMs, endDate, height = 360, onLatestPriceChange = null }) {
     const chartContainerRef = useRef(null);
     const chartRef = useRef(null);
     const requestSeqRef = useRef(0);
@@ -124,7 +123,7 @@ function StockChartCard({ code, months, requestDelayMs, endDate }) {
         chartContainerRef.current.innerHTML = '';
         const chart = createChart(chartContainerRef.current, {
             width: chartContainerRef.current.clientWidth,
-            height: 360,
+            height,
             layout: {
                 background: { color: '#ffffff' },
                 textColor: '#333',
@@ -164,10 +163,17 @@ function StockChartCard({ code, months, requestDelayMs, endDate }) {
                     }
                     candlestickSeries.setData(normalized);
                     chart.timeScale().fitContent();
+                    if (typeof onLatestPriceChange === 'function') {
+                        const latest = normalized[normalized.length - 1];
+                        onLatestPriceChange(latest ? { price: latest.close, time: latest.time } : null);
+                    }
                 })
                 .catch((err) => {
                     if (requestSeq !== requestSeqRef.current) return;
                     if (err?.code === 'ERR_CANCELED') return;
+                    if (typeof onLatestPriceChange === 'function') {
+                        onLatestPriceChange(null);
+                    }
                     const serverMessage = err?.response?.data?.message;
                     if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
                         setError(mapServerErrorMessage(serverMessage));
@@ -205,7 +211,7 @@ function StockChartCard({ code, months, requestDelayMs, endDate }) {
                 chartRef.current = null;
             }
         };
-    }, [code, months, requestDelayMs, endDate]);
+    }, [code, months, requestDelayMs, endDate, height, onLatestPriceChange]);
 
     return (
         <div
@@ -225,7 +231,7 @@ function StockChartCard({ code, months, requestDelayMs, endDate }) {
             </div>
             {loading && <div style={{ marginBottom: '8px', color: '#ef5350' }}>데이터 불러오는 중...</div>}
             {error && <div style={{ marginBottom: '8px', color: '#d32f2f' }}>{error}</div>}
-            <div ref={chartContainerRef} style={{ minHeight: '360px' }} />
+            <div ref={chartContainerRef} style={{ minHeight: `${height}px` }} />
         </div>
     );
 }
@@ -253,12 +259,18 @@ function App() {
     const [portfolio, setPortfolio] = useState(null);
     const [replayState, setReplayState] = useState(null);
     const [pendingOrders, setPendingOrders] = useState([]);
+    const [executions, setExecutions] = useState([]);
+    const [rankings, setRankings] = useState([]);
     const [pendingLoading, setPendingLoading] = useState(false);
-    const [replayStartDate, setReplayStartDate] = useState('');
+    const [executionsLoading, setExecutionsLoading] = useState(false);
+    const [rankingsLoading, setRankingsLoading] = useState(false);
+    const [simOrderTab, setSimOrderTab] = useState('pending');
+    const [executionFilterSide, setExecutionFilterSide] = useState('ALL');
+    const [executionFilterCode, setExecutionFilterCode] = useState('');
+    const [orderConfirmDraft, setOrderConfirmDraft] = useState(null);
     const [tradeCode, setTradeCode] = useState('');
     const [tradeQty, setTradeQty] = useState(1);
-    const [tradeOrderType, setTradeOrderType] = useState('MARKET');
-    const [tradeLimitPrice, setTradeLimitPrice] = useState('');
+    const [simSelectedPrice, setSimSelectedPrice] = useState(null);
     const [holdingOrderQtys, setHoldingOrderQtys] = useState({});
     const [tradeMessage, setTradeMessage] = useState('');
     const [applied, setApplied] = useState({
@@ -281,11 +293,18 @@ function App() {
     }, [applied.codes, isNarrowScreen]);
     const chartCodes = useMemo(() => normalizeCodes(applied.codes), [applied.codes]);
     const chartEndDate = useMemo(() => portfolio?.valuationDate || replayState?.currentDate || null, [portfolio, replayState]);
-    const tradeableCodes = useMemo(() => {
-        if (chartCodes.length > 0) return chartCodes;
-        if (watchlistCodes.length > 0) return watchlistCodes;
-        return STOCK_OPTIONS.map((item) => item.code);
-    }, [chartCodes, watchlistCodes]);
+    const tradeableCodes = useMemo(() => STOCK_OPTIONS.map((item) => item.code), []);
+    const filteredExecutions = useMemo(() => {
+        return executions.filter((item) => {
+            if (executionFilterSide !== 'ALL' && item.side !== executionFilterSide) return false;
+            if (executionFilterCode && item.code !== executionFilterCode) return false;
+            return true;
+        });
+    }, [executions, executionFilterCode, executionFilterSide]);
+    const selectedTradeHolding = useMemo(
+        () => portfolio?.holdings?.find((h) => h.code === tradeCode) || null,
+        [portfolio?.holdings, tradeCode]
+    );
     const isLoggedIn = authToken.trim().length > 0;
     const authPage = currentPath === '/signup' ? 'signup' : 'login';
     const isAuthRoute = currentPath === '/login' || currentPath === '/signup';
@@ -342,6 +361,9 @@ function App() {
         setPortfolio(null);
         setReplayState(null);
         setPendingOrders([]);
+        setExecutions([]);
+        setRankings([]);
+        setSimOrderTab('pending');
         setTradeMessage('');
     }, []);
 
@@ -530,15 +552,55 @@ function App() {
         }
     }, [isLoggedIn]);
 
+    const loadExecutions = useCallback(async () => {
+        if (!isLoggedIn) {
+            setExecutions([]);
+            return;
+        }
+        setExecutionsLoading(true);
+        try {
+            const res = await axios.get(`${API_BASE_URL}/api/sim/orders/executions`);
+            setExecutions(Array.isArray(res.data) ? res.data : []);
+        } catch (err) {
+            const serverMessage = err?.response?.data?.message;
+            if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
+                setTradeMessage(`체결내역 조회 실패: ${serverMessage}`);
+            }
+        } finally {
+            setExecutionsLoading(false);
+        }
+    }, [isLoggedIn]);
+
+    const loadRankings = useCallback(async () => {
+        if (!isLoggedIn) {
+            setRankings([]);
+            return;
+        }
+        setRankingsLoading(true);
+        try {
+            const res = await axios.get(`${API_BASE_URL}/api/sim/rankings`);
+            setRankings(Array.isArray(res.data) ? res.data : []);
+        } catch (err) {
+            const serverMessage = err?.response?.data?.message;
+            if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
+                setTradeMessage(`랭킹 조회 실패: ${serverMessage}`);
+            }
+        } finally {
+            setRankingsLoading(false);
+        }
+    }, [isLoggedIn]);
+
     useEffect(() => {
         loadPendingOrders();
     }, [loadPendingOrders]);
 
     useEffect(() => {
-        if (!replayStartDate) {
-            setReplayStartDate(DEFAULT_REPLAY_START_DATE);
-        }
-    }, [replayStartDate]);
+        loadExecutions();
+    }, [loadExecutions]);
+
+    useEffect(() => {
+        loadRankings();
+    }, [loadRankings]);
 
     const loadReplayState = useCallback(async () => {
         if (!isLoggedIn) {
@@ -548,9 +610,6 @@ function App() {
         try {
             const res = await axios.get(`${API_BASE_URL}/api/sim/replay/state`);
             setReplayState(res.data);
-            if (res.data?.anchorDate) {
-                setReplayStartDate(res.data.anchorDate);
-            }
             if (res.data?.portfolio) {
                 setPortfolio(res.data.portfolio);
             }
@@ -580,6 +639,49 @@ function App() {
     }, [isLoggedIn, replayState?.currentDate, loadPendingOrders]);
 
     useEffect(() => {
+        if (!isLoggedIn) return;
+        loadExecutions();
+    }, [isLoggedIn, replayState?.currentDate, loadExecutions]);
+
+    useEffect(() => {
+        if (!isLoggedIn) return;
+        loadRankings();
+    }, [isLoggedIn, replayState?.currentDate, loadRankings]);
+
+    useEffect(() => {
+        if (!isLoggedIn || mainPage !== 'sim') return;
+        if (!replayState) return;
+        if (replayState.running || replayState.anchorDate) return;
+        if (replayLoading || simLoading) return;
+
+        let cancelled = false;
+        const autoStart = async () => {
+            setReplayLoading(true);
+            try {
+                await axios.post(`${API_BASE_URL}/api/sim/replay/start`, {});
+                if (cancelled) return;
+                await loadReplayState();
+                await loadPendingOrders();
+                await loadExecutions();
+                await loadRankings();
+            } catch (err) {
+                if (cancelled) return;
+                const serverMessage = err?.response?.data?.message;
+                if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
+                    setTradeMessage(serverMessage);
+                }
+            } finally {
+                if (!cancelled) setReplayLoading(false);
+            }
+        };
+
+        autoStart();
+        return () => {
+            cancelled = true;
+        };
+    }, [isLoggedIn, mainPage, replayState, replayLoading, simLoading, loadReplayState, loadPendingOrders, loadExecutions, loadRankings]);
+
+    useEffect(() => {
         if (tradeableCodes.length === 0) {
             setTradeCode('');
             return;
@@ -588,6 +690,10 @@ function App() {
             setTradeCode(tradeableCodes[0]);
         }
     }, [tradeableCodes, tradeCode]);
+
+    useEffect(() => {
+        setSimSelectedPrice(null);
+    }, [tradeCode]);
 
     useEffect(() => {
         if (!portfolio?.holdings) return;
@@ -695,8 +801,8 @@ function App() {
         }
         const targetCode = overrides.code ?? tradeCode;
         const targetQtyInput = overrides.quantity ?? tradeQty;
-        const targetOrderType = (overrides.orderType ?? tradeOrderType ?? 'MARKET').toUpperCase();
-        const targetLimitPriceInput = overrides.limitPrice ?? tradeLimitPrice;
+        const targetOrderType = (overrides.orderType ?? 'MARKET').toUpperCase();
+        const targetLimitPriceInput = overrides.limitPrice ?? null;
 
         if (!targetCode) {
             setTradeMessage('주문할 종목을 먼저 선택해 주세요.');
@@ -742,6 +848,8 @@ function App() {
             setSimLoading(false);
             loadReplayState();
             loadPendingOrders();
+            loadExecutions();
+            loadRankings();
         } catch (err) {
             const serverMessage = err?.response?.data?.message;
             if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
@@ -751,6 +859,47 @@ function App() {
             }
             setSimLoading(false);
         }
+    };
+
+    const openOrderConfirm = (side, overrides = {}) => {
+        const code = overrides.code ?? tradeCode;
+        const quantity = Number(overrides.quantity ?? tradeQty);
+        const orderType = (overrides.orderType ?? 'MARKET').toUpperCase();
+        const limitPriceRaw = overrides.limitPrice ?? null;
+        const limitPrice = orderType === 'LIMIT' ? Number(limitPriceRaw) : null;
+
+        if (!code) {
+            setTradeMessage('주문할 종목을 선택해 주세요.');
+            return;
+        }
+        if (!Number.isInteger(quantity) || quantity <= 0) {
+            setTradeMessage('수량은 1주 이상 정수여야 합니다.');
+            return;
+        }
+        if (orderType === 'LIMIT' && (!Number.isFinite(limitPrice) || limitPrice <= 0)) {
+            setTradeMessage('지정가 주문 가격을 확인해 주세요.');
+            return;
+        }
+
+        setOrderConfirmDraft({
+            side,
+            code,
+            quantity,
+            orderType,
+            limitPrice: orderType === 'LIMIT' ? limitPrice : null,
+        });
+    };
+
+    const confirmOrderDraft = async () => {
+        if (!orderConfirmDraft) return;
+        const draft = orderConfirmDraft;
+        setOrderConfirmDraft(null);
+        await submitOrder(draft.side, {
+            code: draft.code,
+            quantity: draft.quantity,
+            orderType: draft.orderType,
+            limitPrice: draft.limitPrice,
+        });
     };
 
     const resetSimulation = async () => {
@@ -777,6 +926,8 @@ function App() {
             setSimLoading(false);
             loadReplayState();
             loadPendingOrders();
+            loadExecutions();
+            loadRankings();
         } catch (err) {
             const serverMessage = err?.response?.data?.message;
             if (typeof serverMessage === 'string' && serverMessage.trim().length > 0) {
@@ -795,11 +946,11 @@ function App() {
         }
         setReplayLoading(true);
         try {
-            await axios.post(`${API_BASE_URL}/api/sim/replay/start`, {
-                startDate: replayStartDate,
-            });
+            await axios.post(`${API_BASE_URL}/api/sim/replay/start`, {});
             await loadReplayState();
             await loadPendingOrders();
+            await loadExecutions();
+            await loadRankings();
             setTradeMessage('리플레이를 시작했습니다. 1분마다 1영업일씩 진행됩니다.');
         } catch (err) {
             const serverMessage = err?.response?.data?.message;
@@ -823,6 +974,8 @@ function App() {
             await axios.post(`${API_BASE_URL}/api/sim/replay/pause`);
             await loadReplayState();
             await loadPendingOrders();
+            await loadExecutions();
+            await loadRankings();
             setTradeMessage('리플레이를 일시정지했습니다.');
         } catch (err) {
             const serverMessage = err?.response?.data?.message;
@@ -845,6 +998,8 @@ function App() {
         try {
             await axios.delete(`${API_BASE_URL}/api/sim/orders/pending/${orderId}`);
             await loadPendingOrders();
+            await loadExecutions();
+            await loadRankings();
             setTradeMessage('미체결 주문을 취소했습니다.');
         } catch (err) {
             const serverMessage = err?.response?.data?.message;
@@ -863,6 +1018,11 @@ function App() {
         return value.toLocaleString('ko-KR');
     };
 
+    const fmtSigned = (value) => {
+        if (typeof value !== 'number' || !Number.isFinite(value)) return '-';
+        return `${value > 0 ? '+' : ''}${value.toLocaleString('ko-KR')}`;
+    };
+
     const fmtDateTime = (value) => {
         if (!value) return '-';
         try {
@@ -875,6 +1035,23 @@ function App() {
     const getHoldingOrderQty = (code) => {
         const value = Number(holdingOrderQtys[code]);
         return Number.isInteger(value) && value > 0 ? value : 1;
+    };
+
+    const getHoldingReturnRate = (holding) => {
+        const qty = Number(holding?.quantity) || 0;
+        const avgPrice = Number(holding?.avgPrice) || 0;
+        const unrealizedPnl = Number(holding?.unrealizedPnl) || 0;
+        const cost = qty * avgPrice;
+        if (cost <= 0) return 0;
+        return (unrealizedPnl / cost) * 100;
+    };
+
+    const setHoldingQuickQty = (code, holdQty, ratio) => {
+        const qty = Math.max(1, Math.ceil(Math.max(1, Number(holdQty) || 1) * ratio));
+        setHoldingOrderQtys((prev) => ({ ...prev, [code]: qty }));
+        setTradeCode(code);
+        setTradeQty(qty);
+        return qty;
     };
 
     if (!isLoggedIn) {
@@ -965,6 +1142,21 @@ function App() {
                                 }}
                             >
                                 로그인
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setSimOrderTab('rankings')}
+                                style={{
+                                    padding: '6px 10px',
+                                    borderRadius: '999px',
+                                    border: simOrderTab === 'rankings' ? 'none' : '1px solid #cfd8dc',
+                                    backgroundColor: simOrderTab === 'rankings' ? '#3949ab' : '#fff',
+                                    color: simOrderTab === 'rankings' ? '#fff' : '#455a64',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                }}
+                            >
+                                랭킹
                             </button>
                         </div>
                     ) : (
@@ -1306,243 +1498,466 @@ function App() {
                 </>
             )}
 
+            
+            
             {mainPage === 'sim' && (
-            <div
-                style={{
-                    marginTop: '20px',
-                    marginBottom: '20px',
-                    padding: '15px',
-                    backgroundColor: '#fff',
-                    borderRadius: '8px',
-                    boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '10px',
-                }}
-            >
-                <h3 style={{ margin: 0 }}>모의투자</h3>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
-                    <label>리플레이 시작일</label>
-                    <input
-                        type="date"
-                        value={replayStartDate}
-                        onChange={(e) => setReplayStartDate(e.target.value)}
-                        disabled={replayLoading || !isLoggedIn || !!replayState?.anchorDate}
-                        style={{ padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
-                    />
-                    <button
-                        type="button"
-                        onClick={startReplay}
-                        disabled={replayLoading || simLoading || !isLoggedIn}
-                        style={{ padding: '8px 12px', border: 'none', borderRadius: '6px', backgroundColor: '#3949ab', color: '#fff' }}
-                    >
-                        리플레이 시작
-                    </button>
-                    <button
-                        type="button"
-                        onClick={pauseReplay}
-                        disabled={replayLoading || simLoading || !isLoggedIn}
-                        style={{ padding: '8px 12px', border: '1px solid #ccc', borderRadius: '6px', backgroundColor: '#fff' }}
-                    >
-                        일시정지
-                    </button>
-                    <span style={{ color: '#555' }}>
-                        상태: {replayState?.running ? '진행중' : '정지'} / 기준일: {portfolio?.valuationDate || replayState?.currentDate || '-'}
-                    </span>
-                    {replayState?.anchorDate && (
-                        <span style={{ color: '#555' }}>
-                            시작 고정일: {replayState.anchorDate}
-                        </span>
-                    )}
-                </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
-                    <label>종목:</label>
-                    <select
-                        value={tradeCode}
-                        onChange={(e) => setTradeCode(e.target.value)}
-                        disabled={simLoading || tradeableCodes.length === 0 || !isLoggedIn}
-                        style={{ padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
-                    >
-                        {tradeableCodes.map((code) => (
-                            <option key={code} value={code}>
-                                {getStockNameByCode(code)} ({code})
-                            </option>
-                        ))}
-                    </select>
-                    <label>수량:</label>
-                    <input
-                        type="number"
-                        min="1"
-                        value={tradeQty}
-                        onChange={(e) => setTradeQty(e.target.value)}
-                        disabled={simLoading || !isLoggedIn}
-                        style={{ width: '100px', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
-                    />
-                    <label>주문유형:</label>
-                    <select
-                        value={tradeOrderType}
-                        onChange={(e) => setTradeOrderType(e.target.value)}
-                        disabled={simLoading || !isLoggedIn}
-                        style={{ padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
-                    >
-                        <option value="MARKET">시장가</option>
-                        <option value="LIMIT">지정가</option>
-                    </select>
-                    {tradeOrderType === 'LIMIT' && (
-                        <>
-                            <label>지정가:</label>
-                            <input
-                                type="number"
-                                min="1"
-                                value={tradeLimitPrice}
-                                onChange={(e) => setTradeLimitPrice(e.target.value)}
-                                disabled={simLoading || !isLoggedIn}
-                                style={{ width: '120px', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
-                            />
-                        </>
-                    )}
-                    <button
-                        type="button"
-                        onClick={() => submitOrder('BUY')}
-                        disabled={simLoading || !tradeCode || !isLoggedIn}
-                        style={{ padding: '8px 12px', border: 'none', borderRadius: '6px', backgroundColor: '#e53935', color: '#fff' }}
-                    >
-                        매수
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => submitOrder('SELL')}
-                        disabled={simLoading || !tradeCode || !isLoggedIn}
-                        style={{ padding: '8px 12px', border: 'none', borderRadius: '6px', backgroundColor: '#00897b', color: '#fff' }}
-                    >
-                        매도
-                    </button>
-                    <button
-                        type="button"
-                        onClick={resetSimulation}
-                        disabled={simLoading || !isLoggedIn}
-                        style={{ padding: '8px 12px', border: '1px solid #ccc', borderRadius: '6px', backgroundColor: '#fff' }}
-                    >
-                        초기화
-                    </button>
-                </div>
-                {tradeMessage && <div style={{ color: '#555' }}>{tradeMessage}</div>}
                 <div
                     style={{
-                        border: '1px solid #eceff1',
+                        marginTop: '20px',
+                        marginBottom: '20px',
+                        padding: '15px',
+                        backgroundColor: '#fff',
                         borderRadius: '8px',
-                        padding: '10px',
-                        backgroundColor: '#fafbfc',
+                        boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '10px',
                     }}
                 >
-                    <div style={{ fontWeight: 700, marginBottom: '6px' }}>미체결 지정가 주문</div>
-                    {pendingLoading && <div style={{ color: '#607d8b' }}>불러오는 중...</div>}
-                    {!pendingLoading && pendingOrders.length === 0 && (
-                        <div style={{ color: '#78909c' }}>현재 미체결 주문이 없습니다.</div>
+                    <h3 style={{ margin: 0 }}>모의투자</h3>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+                        <span style={{ color: '#607d8b', fontSize: '13px' }}>자동 재생 시작 (기준일 고정)</span>
+                        <button
+                            type="button"
+                            onClick={startReplay}
+                            disabled={replayLoading || simLoading || !isLoggedIn}
+                            style={{ padding: '8px 12px', border: 'none', borderRadius: '6px', backgroundColor: '#3949ab', color: '#fff' }}
+                        >
+                            리플레이 시작
+                        </button>
+                        <button
+                            type="button"
+                            onClick={pauseReplay}
+                            disabled={replayLoading || simLoading || !isLoggedIn}
+                            style={{ padding: '8px 12px', border: '1px solid #ccc', borderRadius: '6px', backgroundColor: '#fff' }}
+                        >
+                            일시정지
+                        </button>
+                        <span style={{ color: '#555' }}>
+                            진행상태: {replayState?.running ? '진행중' : '정지'} / 기준일: {portfolio?.valuationDate || replayState?.currentDate || '-'}
+                        </span>
+                        {replayState?.anchorDate && (
+                            <span style={{ color: '#555' }}>
+                                시작 고정일: {replayState.anchorDate}
+                            </span>
+                        )}
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+                        <label>종목:</label>
+                        <select
+                            value={tradeCode}
+                            onChange={(e) => setTradeCode(e.target.value)}
+                            disabled={simLoading || tradeableCodes.length === 0 || !isLoggedIn}
+                            style={{ padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
+                        >
+                            {tradeableCodes.map((code) => (
+                                <option key={code} value={code}>
+                                    {getStockNameByCode(code)} ({code})
+                                </option>
+                            ))}
+                        </select>
+                        <label>수량:</label>
+                        <input
+                            type="number"
+                            min="1"
+                            value={tradeQty}
+                            onChange={(e) => setTradeQty(e.target.value)}
+                            disabled={simLoading || !isLoggedIn}
+                            style={{ width: '100px', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
+                        />
+                        <button
+                            type="button"
+                            onClick={() => openOrderConfirm('BUY')}
+                            disabled={simLoading || !tradeCode || !isLoggedIn}
+                            style={{ padding: '8px 12px', border: 'none', borderRadius: '6px', backgroundColor: '#e53935', color: '#fff' }}
+                        >
+                            매수
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => openOrderConfirm('SELL')}
+                            disabled={simLoading || !tradeCode || !isLoggedIn}
+                            style={{ padding: '8px 12px', border: 'none', borderRadius: '6px', backgroundColor: '#00897b', color: '#fff' }}
+                        >
+                            매도
+                        </button>
+                        <button
+                            type="button"
+                            onClick={resetSimulation}
+                            disabled={simLoading || !isLoggedIn}
+                            style={{ padding: '8px 12px', border: '1px solid #ccc', borderRadius: '6px', backgroundColor: '#fff' }}
+                        >
+                            초기화
+                        </button>
+                    </div>
+                    {tradeMessage && <div style={{ color: '#555' }}>{tradeMessage}</div>}
+
+                    {tradeCode && (
+                        <div
+                            style={{
+                                border: '1px solid #e6edf5',
+                                borderRadius: '10px',
+                                padding: '10px',
+                                background: '#fbfdff',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '8px',
+                            }}
+                        >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                <div style={{ fontWeight: 700, color: '#1f2937' }}>
+                                    {getStockNameByCode(tradeCode)} ({tradeCode})
+                                </div>
+                                <div style={{ color: '#475569', fontSize: '13px' }}>
+                                    현재가:{' '}
+                                    {simSelectedPrice?.price
+                                        ? `${fmt(Number(simSelectedPrice.price))}원`
+                                        : selectedTradeHolding?.currentPrice
+                                            ? `${fmt(Number(selectedTradeHolding.currentPrice))}원`
+                                            : '-'}
+                                </div>
+                            </div>
+                            <StockChartCard
+                                code={tradeCode}
+                                months={6}
+                                requestDelayMs={0}
+                                endDate={chartEndDate}
+                                height={220}
+                                onLatestPriceChange={setSimSelectedPrice}
+                            />
+                        </div>
                     )}
-                    {!pendingLoading &&
-                        pendingOrders.map((o) => (
-                            <div
-                                key={o.id}
+
+                    <div className="sim-order-panel">
+                        <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                            <button
+                                type="button"
+                                onClick={() => setSimOrderTab('pending')}
                                 style={{
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                    alignItems: 'center',
-                                    gap: '8px',
-                                    padding: '6px 0',
-                                    borderTop: '1px solid #eceff1',
+                                    padding: '6px 10px',
+                                    borderRadius: '999px',
+                                    border: simOrderTab === 'pending' ? 'none' : '1px solid #cfd8dc',
+                                    backgroundColor: simOrderTab === 'pending' ? '#3949ab' : '#fff',
+                                    color: simOrderTab === 'pending' ? '#fff' : '#455a64',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
                                 }}
                             >
-                                <div style={{ fontSize: '13px', color: '#37474f' }}>
-                                    {o.side === 'BUY' ? '매수' : '매도'} {getStockNameByCode(o.code)} ({o.code}) {o.quantity}주
-                                    {' @ '}
-                                    {fmt(o.limitPrice)}원 · 접수 {fmtDateTime(o.createdAt)}
+                                미체결 주문
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setSimOrderTab('executions')}
+                                style={{
+                                    padding: '6px 10px',
+                                    borderRadius: '999px',
+                                    border: simOrderTab === 'executions' ? 'none' : '1px solid #cfd8dc',
+                                    backgroundColor: simOrderTab === 'executions' ? '#3949ab' : '#fff',
+                                    color: simOrderTab === 'executions' ? '#fff' : '#455a64',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                }}
+                            >
+                                체결내역
+                            </button>
+                        </div>
+
+                        {simOrderTab === 'pending' && (
+                            <>
+                                {pendingLoading && <div style={{ color: '#607d8b' }}>불러오는 중...</div>}
+                                {!pendingLoading && pendingOrders.length === 0 && (
+                                    <div style={{ color: '#78909c' }}>현재 미체결 주문이 없습니다.</div>
+                                )}
+                                {!pendingLoading && pendingOrders.length > 0 && (
+                                    <div className="sim-order-table-wrap">
+                                        <table className="sim-order-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>구분</th>
+                                                    <th>종목</th>
+                                                    <th>수량</th>
+                                                    <th>주문가</th>
+                                                    <th>접수시간</th>
+                                                    <th>액션</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {pendingOrders.map((o) => (
+                                                    <tr key={o.id}>
+                                                        <td className={o.side === 'BUY' ? 'up' : 'down'}>{o.side === 'BUY' ? '매수' : '매도'}</td>
+                                                        <td>{getStockNameByCode(o.code)} ({o.code})</td>
+                                                        <td className="num">{fmt(o.quantity)}주</td>
+                                                        <td className="num">{fmt(o.limitPrice)}원</td>
+                                                        <td>{fmtDateTime(o.createdAt)}</td>
+                                                        <td>
+                                                            <button
+                                                                type="button"
+                                                                className="sim-order-mini-btn"
+                                                                onClick={() => cancelPendingOrder(o.id)}
+                                                                disabled={pendingLoading || simLoading || !isLoggedIn}
+                                                            >
+                                                                취소
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                )}
+                            </>
+                        )}
+
+                        {simOrderTab === 'executions' && (
+                            <>
+                                <div className="sim-order-toolbar">
+                                    <select
+                                        value={executionFilterSide}
+                                        onChange={(e) => setExecutionFilterSide(e.target.value)}
+                                        className="sim-order-filter"
+                                        disabled={executionsLoading}
+                                    >
+                                        <option value="ALL">전체</option>
+                                        <option value="BUY">매수</option>
+                                        <option value="SELL">매도</option>
+                                    </select>
+                                    <select
+                                        value={executionFilterCode}
+                                        onChange={(e) => setExecutionFilterCode(e.target.value)}
+                                        className="sim-order-filter"
+                                        disabled={executionsLoading}
+                                    >
+                                        <option value="">전체 종목</option>
+                                        {tradeableCodes.map((code) => (
+                                            <option key={`exec-filter-${code}`} value={code}>
+                                                {getStockNameByCode(code)} ({code})
+                                            </option>
+                                        ))}
+                                    </select>
                                 </div>
-                                <button
-                                    type="button"
-                                    onClick={() => cancelPendingOrder(o.id)}
-                                    disabled={pendingLoading || simLoading || !isLoggedIn}
-                                    style={{
-                                        padding: '6px 10px',
-                                        borderRadius: '6px',
-                                        border: '1px solid #cfd8dc',
-                                        backgroundColor: '#fff',
-                                        color: '#455a64',
-                                        cursor: pendingLoading || simLoading || !isLoggedIn ? 'not-allowed' : 'pointer',
-                                    }}
-                                >
-                                    취소
-                                </button>
+                                {executionsLoading && <div style={{ color: '#607d8b' }}>불러오는 중...</div>}
+                                {!executionsLoading && filteredExecutions.length === 0 && (
+                                    <div style={{ color: '#78909c' }}>체결내역이 없습니다.</div>
+                                )}
+                                {!executionsLoading && filteredExecutions.length > 0 && (
+                                    <div className="sim-order-table-wrap">
+                                        <table className="sim-order-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>구분</th>
+                                                    <th>종목</th>
+                                                    <th>수량</th>
+                                                    <th>체결가</th>
+                                                    <th>금액</th>
+                                                    <th>기준일</th>
+                                                    <th>체결시간</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {filteredExecutions.map((o) => (
+                                                    <tr key={o.id}>
+                                                        <td className={o.side === 'BUY' ? 'up' : 'down'}>{o.side === 'BUY' ? '매수' : '매도'}</td>
+                                                        <td>{getStockNameByCode(o.code)} ({o.code})</td>
+                                                        <td className="num">{fmt(o.quantity)}주</td>
+                                                        <td className="num">{fmt(o.price)}원</td>
+                                                        <td className="num">{fmt(o.amount)}원</td>
+                                                        <td>{o.valuationDate || '-'}</td>
+                                                        <td>{fmtDateTime(o.executedAt)}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                )}
+                            </>
+                        )}
+                        {simOrderTab === 'rankings' && (
+                            <>
+                                <div style={{ color: '#64748b', fontSize: '12px', marginBottom: '6px' }}>
+                                    랭킹은 사용자별 현재 리플레이 기준일 기준으로 계산됩니다.
+                                </div>
+                                {rankingsLoading && <div style={{ color: '#607d8b' }}>불러오는 중...</div>}
+                                {!rankingsLoading && rankings.length === 0 && (
+                                    <div style={{ color: '#78909c' }}>표시할 랭킹이 없습니다.</div>
+                                )}
+                                {!rankingsLoading && rankings.length > 0 && (
+                                    <div className="sim-order-table-wrap">
+                                        <table className="sim-order-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>순위</th>
+                                                    <th>사용자</th>
+                                                    <th>수익률</th>
+                                                    <th>총자산</th>
+                                                    <th>실현손익</th>
+                                                    <th>미실현손익</th>
+                                                    <th>기준일</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {rankings.map((r) => (
+                                                    <tr key={`ranking-${r.userId}`}>
+                                                        <td className="num">{fmt(Number(r.rank))}</td>
+                                                        <td>{r.me ? `${r.userName} (나)` : r.userName}</td>
+                                                        <td className={`num ${Number(r.returnRate) >= 0 ? 'up' : 'down'}`}>
+                                                            {Number(r.returnRate) > 0 ? '+' : ''}{Number(r.returnRate).toFixed(2)}%
+                                                        </td>
+                                                        <td className="num">{fmt(Number(r.totalValue))}원</td>
+                                                        <td className={`num ${Number(r.realizedPnl) >= 0 ? 'up' : 'down'}`}>{fmtSigned(Number(r.realizedPnl))}원</td>
+                                                        <td className={`num ${Number(r.unrealizedPnl) >= 0 ? 'up' : 'down'}`}>{fmtSigned(Number(r.unrealizedPnl))}원</td>
+                                                        <td>{r.valuationDate || '-'}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                )}
+                            </>
+                        )}
+                    </div>
+
+                    {portfolio && (
+                        <div style={{ fontSize: '14px', color: '#333' }}>
+                            현금: {fmt(portfolio.cash)}원 | 평가금액: {fmt(portfolio.marketValue)}원 | 총자산: {fmt(portfolio.totalValue)}원 | 실현손익: {fmt(portfolio.realizedPnl)}원 | 미실현손익: {fmt(portfolio.unrealizedPnl)}원
+                        </div>
+                    )}
+
+                    {portfolio?.holdings?.length > 0 && (
+                        <div className="sim-holdings-list">
+                            <div className="sim-holdings-title">보유 종목</div>
+                            <div className="sim-holdings-table-wrap">
+                                <table className="sim-holdings-table">
+                                    <thead>
+                                        <tr>
+                                            <th>종목</th>
+                                            <th>보유수량</th>
+                                            <th>평단가</th>
+                                            <th>현재가</th>
+                                            <th>평가금액</th>
+                                            <th>평가손익</th>
+                                            <th>수익률</th>
+                                            <th>주문</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {portfolio.holdings.map((h) => {
+                                            const holdQty = Math.max(1, Number(h.quantity) || 1);
+                                            const unrealizedPnl = Number(h.unrealizedPnl) || 0;
+                                            const returnRate = getHoldingReturnRate(h);
+                                            const isUp = unrealizedPnl >= 0;
+                                            return (
+                                                <tr key={`${h.code}-${h.quantity}-${h.avgPrice}`}>
+                                                    <td>
+                                                        <div className="sim-holding-code">{getStockNameByCode(h.code)}</div>
+                                                        <div className="sim-holding-meta">{h.code}</div>
+                                                    </td>
+                                                    <td className="num">{fmt(Number(h.quantity) || 0)}주</td>
+                                                    <td className="num">{fmt(Number(h.avgPrice) || 0)}원</td>
+                                                    <td className="num">{fmt(Number(h.currentPrice) || 0)}원</td>
+                                                    <td className="num">{fmt(Number(h.marketValue) || 0)}원</td>
+                                                    <td className={`num ${isUp ? 'up' : 'down'}`}>{fmtSigned(unrealizedPnl)}원</td>
+                                                    <td className={`num ${isUp ? 'up' : 'down'}`}>
+                                                        {returnRate > 0 ? '+' : ''}{returnRate.toFixed(2)}%
+                                                    </td>
+                                                    <td>
+                                                        <div className="sim-holding-actions">
+                                                            <input
+                                                                type="number"
+                                                                min="1"
+                                                                max={holdQty}
+                                                                className="sim-holding-qty-input"
+                                                                value={holdingOrderQtys[h.code] ?? 1}
+                                                                disabled={simLoading || !isLoggedIn}
+                                                                onChange={(e) => {
+                                                                    const raw = e.target.value;
+                                                                    setHoldingOrderQtys((prev) => ({ ...prev, [h.code]: raw }));
+                                                                }}
+                                                            />
+                                                            <button type="button" className="sim-holding-quick-btn" disabled={simLoading || !isLoggedIn} onClick={() => setHoldingQuickQty(h.code, holdQty, 0.25)}>25%</button>
+                                                            <button type="button" className="sim-holding-quick-btn" disabled={simLoading || !isLoggedIn} onClick={() => setHoldingQuickQty(h.code, holdQty, 0.5)}>50%</button>
+                                                            <button
+                                                                type="button"
+                                                                className="sim-holding-buy-btn"
+                                                                disabled={simLoading || !isLoggedIn}
+                                                                onClick={() => {
+                                                                    const qty = getHoldingOrderQty(h.code);
+                                                                    setTradeCode(h.code);
+                                                                    setTradeQty(qty);
+                                                                    openOrderConfirm('BUY', { code: h.code, quantity: qty, orderType: 'MARKET', limitPrice: null });
+                                                                }}
+                                                            >
+                                                                매수
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                className="sim-holding-sell-btn"
+                                                                disabled={simLoading || !isLoggedIn}
+                                                                onClick={() => {
+                                                                    const qty = Math.min(getHoldingOrderQty(h.code), holdQty);
+                                                                    setTradeCode(h.code);
+                                                                    setTradeQty(qty);
+                                                                    openOrderConfirm('SELL', { code: h.code, quantity: qty, orderType: 'MARKET', limitPrice: null });
+                                                                }}
+                                                            >
+                                                                매도
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                className="sim-holding-all-sell-btn"
+                                                                disabled={simLoading || !isLoggedIn}
+                                                                onClick={() => {
+                                                                    setHoldingOrderQtys((prev) => ({ ...prev, [h.code]: holdQty }));
+                                                                    setTradeCode(h.code);
+                                                                    setTradeQty(holdQty);
+                                                                    openOrderConfirm('SELL', { code: h.code, quantity: holdQty, orderType: 'MARKET', limitPrice: null });
+                                                                }}
+                                                            >
+                                                                전량
+                                                            </button>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
                             </div>
-                        ))}
+                        </div>
+                    )}
+
+                    {orderConfirmDraft && (
+                        <div className="sim-modal-backdrop" role="presentation" onClick={() => setOrderConfirmDraft(null)}>
+                            <div className="sim-confirm-modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+                                <div className="sim-confirm-title">주문 확인</div>
+                                <div className="sim-confirm-body">
+                                    <div><strong>구분</strong> {orderConfirmDraft.side === 'BUY' ? '매수' : '매도'}</div>
+                                    <div><strong>종목</strong> {getStockNameByCode(orderConfirmDraft.code)} ({orderConfirmDraft.code})</div>
+                                    <div><strong>수량</strong> {fmt(orderConfirmDraft.quantity)}주</div>
+                                    <div><strong>주문유형</strong> {orderConfirmDraft.orderType === 'LIMIT' ? '지정가' : '시장가'}</div>
+                                    {orderConfirmDraft.orderType === 'LIMIT' && (
+                                        <div><strong>주문가</strong> {fmt(orderConfirmDraft.limitPrice)}원</div>
+                                    )}
+                                    {orderConfirmDraft.orderType === 'MARKET' && (
+                                        <div><strong>예상 기준가</strong> {fmt(Number(portfolio?.holdings?.find((h) => h.code === orderConfirmDraft.code)?.currentPrice) || 0)}원</div>
+                                    )}
+                                </div>
+                                <div className="sim-confirm-actions">
+                                    <button type="button" className="sim-order-mini-btn" onClick={() => setOrderConfirmDraft(null)}>취소</button>
+                                    <button
+                                        type="button"
+                                        className={orderConfirmDraft.side === 'BUY' ? 'sim-holding-buy-btn' : 'sim-holding-sell-btn'}
+                                        onClick={confirmOrderDraft}
+                                        disabled={simLoading}
+                                    >
+                                        확인
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
-                {portfolio && (
-                    <div style={{ fontSize: '14px', color: '#333' }}>
-                        현금: {fmt(portfolio.cash)}원 | 평가금액: {fmt(portfolio.marketValue)}원 | 총자산: {fmt(portfolio.totalValue)}원 | 실현손익: {fmt(portfolio.realizedPnl)}원 | 미실현손익: {fmt(portfolio.unrealizedPnl)}원
-                    </div>
-                )}
-                {portfolio?.holdings?.length > 0 && (
-                    <div className="sim-holdings-list">
-                        <div className="sim-holdings-title">보유 종목</div>
-                        {portfolio.holdings.map((h) => (
-                            <div key={`${h.code}-${h.quantity}-${h.avgPrice}`} className="sim-holding-row">
-                                <div className="sim-holding-main">
-                                    <div className="sim-holding-code">
-                                        {getStockNameByCode(h.code)} ({h.code})
-                                    </div>
-                                    <div className="sim-holding-meta">
-                                        {h.quantity}주 보유 · 평단 {fmt(h.avgPrice)}원
-                                    </div>
-                                </div>
-                                <div className="sim-holding-actions">
-                                    <input
-                                        type="number"
-                                        min="1"
-                                        max={Math.max(1, Number(h.quantity) || 1)}
-                                        className="sim-holding-qty-input"
-                                        value={holdingOrderQtys[h.code] ?? 1}
-                                        disabled={simLoading || !isLoggedIn}
-                                        onChange={(e) => {
-                                            const raw = e.target.value;
-                                            setHoldingOrderQtys((prev) => ({
-                                                ...prev,
-                                                [h.code]: raw,
-                                            }));
-                                        }}
-                                    />
-                                    <button
-                                        type="button"
-                                        className="sim-holding-buy-btn"
-                                        disabled={simLoading || !isLoggedIn}
-                                        onClick={() => {
-                                            const qty = getHoldingOrderQty(h.code);
-                                            setTradeCode(h.code);
-                                            setTradeQty(qty);
-                                            submitOrder('BUY', { code: h.code, quantity: qty, orderType: 'MARKET', limitPrice: null });
-                                        }}
-                                    >
-                                        매수
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="sim-holding-sell-btn"
-                                        disabled={simLoading || !isLoggedIn}
-                                        onClick={() => {
-                                            const qty = Math.min(getHoldingOrderQty(h.code), Math.max(1, Number(h.quantity) || 1));
-                                            setTradeCode(h.code);
-                                            setTradeQty(qty);
-                                            submitOrder('SELL', { code: h.code, quantity: qty, orderType: 'MARKET', limitPrice: null });
-                                        }}
-                                    >
-                                        매도
-                                    </button>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                )}
-            </div>
             )}
+
 
             <footer style={{ marginTop: '20px', fontSize: '13px', color: '#888', textAlign: 'center' }}>
                 Backend: Spring Boot (8080) | Frontend: React (3000)

@@ -67,6 +67,18 @@ public class SimulationController {
         return simulationService.getPendingOrders(userId);
     }
 
+    @GetMapping("/orders/executions")
+    public List<TradeExecutionDto> getTradeExecutions(@RequestHeader("Authorization") String authorizationHeader) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
+        return simulationService.getTradeExecutions(userId);
+    }
+
+    @GetMapping("/rankings")
+    public List<SimRankingDto> getRankings(@RequestHeader("Authorization") String authorizationHeader) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
+        return simulationService.getRankings(userId);
+    }
+
     @DeleteMapping("/orders/pending/{orderId}")
     public ResponseEntity<Void> cancelPendingOrder(
             @RequestHeader("Authorization") String authorizationHeader,
