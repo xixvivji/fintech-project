@@ -14,6 +14,7 @@ public interface DailyPriceRepository extends JpaRepository<DailyPriceEntity, Lo
     Optional<DailyPriceEntity> findTopByCodeAndTradeDateLessThanEqualOrderByTradeDateDesc(String code, LocalDate tradeDate);
     @Query("select max(d.tradeDate) from DailyPriceEntity d where d.tradeDate <= :tradeDate")
     Optional<LocalDate> findLatestTradeDateOnOrBefore(@Param("tradeDate") LocalDate tradeDate);
+    List<DailyPriceEntity> findByTradeDate(LocalDate tradeDate);
     List<DailyPriceEntity> findByCodeOrderByTradeDateAsc(String code);
     List<DailyPriceEntity> findByCodeAndTradeDateBetweenOrderByTradeDateAsc(String code, LocalDate startDate, LocalDate endDate);
     List<DailyPriceEntity> findByTradeDateOrderByVolumeDesc(LocalDate tradeDate);

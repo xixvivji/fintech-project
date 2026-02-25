@@ -137,6 +137,66 @@ public class StockService {
                 .toList();
     }
 
+    public TopMoversResponseDto getTopMovers(String date, int limit) {
+        LocalDate targetDate = parseEndDateOrToday(date);
+        int safeLimit = Math.max(1, Math.min(limit, 20));
+
+        LocalDate tradeDate = dailyPriceRepository
+                .findLatestTradeDateOnOrBefore(targetDate)
+                .orElseThrow(() -> new IllegalStateException("No daily_price data on or before " + targetDate));
+        LocalDate prevTradeDate = dailyPriceRepository
+                .findLatestTradeDateOnOrBefore(tradeDate.minusDays(1))
+                .orElseThrow(() -> new IllegalStateException("No previous trading day data before " + tradeDate));
+
+        Map<String, DailyPriceEntity> prevByCode = new HashMap<>();
+        for (DailyPriceEntity row : dailyPriceRepository.findByTradeDate(prevTradeDate)) {
+            prevByCode.put(row.getCode(), row);
+        }
+
+        List<TopMoverStockDto> result = new ArrayList<>();
+        for (DailyPriceEntity curr : dailyPriceRepository.findByTradeDate(tradeDate)) {
+            DailyPriceEntity prev = prevByCode.get(curr.getCode());
+            if (prev == null) continue;
+            double prevClose = prev.getClosePrice();
+            if (prevClose == 0) continue;
+            double changeRate = ((curr.getClosePrice() - prevClose) / prevClose) * 100.0;
+            result.add(new TopMoverStockDto(
+                    curr.getCode(),
+                    tradeDate.toString(),
+                    round2(curr.getClosePrice()),
+                    round2(prevClose),
+                    round2(changeRate)
+            ));
+        }
+
+        result.sort((a, b) -> {
+            int byRate = Double.compare(b.getChangeRate(), a.getChangeRate());
+            if (byRate != 0) return byRate;
+            return a.getCode().compareTo(b.getCode());
+        });
+        List<TopMoverStockDto> gainers = result.stream()
+                .filter(r -> r.getChangeRate() >= 0)
+                .limit(safeLimit)
+                .toList();
+
+        List<TopMoverStockDto> losers = result.stream()
+                .filter(r -> r.getChangeRate() < 0)
+                .sorted((a, b) -> {
+                    int byRate = Double.compare(a.getChangeRate(), b.getChangeRate());
+                    if (byRate != 0) return byRate;
+                    return a.getCode().compareTo(b.getCode());
+                })
+                .limit(safeLimit)
+                .toList();
+
+        return new TopMoversResponseDto(
+                tradeDate.toString(),
+                prevTradeDate.toString(),
+                gainers,
+                losers
+        );
+    }
+
     public double getLatestClosePrice(String stockCode) {
         String normalizedCode = normalizeCode(stockCode);
         return dailyPriceRepository.findTopByCodeOrderByTradeDateDesc(normalizedCode)
@@ -487,6 +547,10 @@ public class StockService {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    private double round2(double value) {
+        return Math.round(value * 100.0) / 100.0;
     }
 
     private LocalDate parseEndDateOrToday(String endDate) {

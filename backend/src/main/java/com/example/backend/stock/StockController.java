@@ -29,6 +29,14 @@ public class StockController {
         return stockService.getTopVolumeStocks(date, limit);
     }
 
+    @GetMapping("/top-movers")
+    public TopMoversResponseDto getTopMovers(
+            @RequestParam(required = false) String date,
+            @RequestParam(defaultValue = "5") int limit
+    ) {
+        return stockService.getTopMovers(date, limit);
+    }
+
     @PostMapping("/backfill")
     public StockBackfillResponseDto backfill(@RequestBody StockBackfillRequestDto request) {
         if (request == null) {

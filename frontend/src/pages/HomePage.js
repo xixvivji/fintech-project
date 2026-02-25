@@ -70,7 +70,7 @@ export default function HomePage({
 
   const [moversLoading, setMoversLoading] = useState(false);
   const [moversError, setMoversError] = useState("");
-  const [moversRows, setMoversRows] = useState([]);
+  const [moversPayload, setMoversPayload] = useState({ gainers: [], losers: [], tradeDate: "" });
 
   const [popularLoading, setPopularLoading] = useState(false);
   const [popularError, setPopularError] = useState("");
@@ -92,37 +92,34 @@ export default function HomePage({
     }
   }, [isLoggedIn, loadRankings]);
 
-  const moverUniverse = useMemo(() => {
-    const preferred = Array.from(
-      new Set([...(watchlistCodes || []), "005930", "000660", "035420", "035720", "005380", "000270"])
-    );
-    return preferred.slice(0, 10);
-  }, [watchlistCodes]);
-
   useEffect(() => {
     let cancelled = false;
     async function loadMovers() {
-      if (!apiBaseUrl || moverUniverse.length === 0) return;
+      if (!apiBaseUrl) return;
       setMoversLoading(true);
       setMoversError("");
       try {
-        const results = await Promise.all(
-          moverUniverse.map(async (code) => {
-            const res = await axios.get(`${apiBaseUrl}/api/stock/chart/${code}`, {
-              params: { months: 1, endDate: chartEndDate || undefined },
-            });
-            const rows = Array.isArray(res.data) ? res.data : [];
-            const last = rows[rows.length - 1];
-            return {
-              code,
-              name: getStockNameByCode(code),
-              changeRate: calcMovePercent(rows),
-              close: Number(last?.close || 0),
-            };
-          })
-        );
+        const res = await axios.get(`${apiBaseUrl}/api/stock/top-movers`, {
+          params: { date: chartEndDate || undefined, limit: 5 },
+        });
         if (!cancelled) {
-          setMoversRows(results.filter((r) => Number.isFinite(r.changeRate)));
+          const gainers = Array.isArray(res.data?.gainers) ? res.data.gainers : [];
+          const losers = Array.isArray(res.data?.losers) ? res.data.losers : [];
+          setMoversPayload({
+            tradeDate: res.data?.tradeDate || "",
+            gainers: gainers.map((row) => ({
+              code: row.code,
+              name: getStockNameByCode(row.code),
+              changeRate: Number(row.changeRate || 0),
+              close: Number(row.closePrice || 0),
+            })),
+            losers: losers.map((row) => ({
+              code: row.code,
+              name: getStockNameByCode(row.code),
+              changeRate: Number(row.changeRate || 0),
+              close: Number(row.closePrice || 0),
+            })),
+          });
         }
       } catch (err) {
         if (!cancelled) {
@@ -136,7 +133,7 @@ export default function HomePage({
     return () => {
       cancelled = true;
     };
-  }, [apiBaseUrl, moverUniverse, chartEndDate, getStockNameByCode]);
+  }, [apiBaseUrl, chartEndDate, getStockNameByCode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -166,14 +163,8 @@ export default function HomePage({
   }, [apiBaseUrl, isLoggedIn]);
 
   const top5 = useMemo(() => (rankings || []).slice(0, 5), [rankings]);
-  const upMovers = useMemo(
-    () => [...moversRows].sort((a, b) => (b.changeRate ?? -999) - (a.changeRate ?? -999)).slice(0, 5),
-    [moversRows]
-  );
-  const downMovers = useMemo(
-    () => [...moversRows].sort((a, b) => (a.changeRate ?? 999) - (b.changeRate ?? 999)).slice(0, 5),
-    [moversRows]
-  );
+  const upMovers = useMemo(() => moversPayload.gainers || [], [moversPayload]);
+  const downMovers = useMemo(() => moversPayload.losers || [], [moversPayload]);
 
   const totalValue = Number(portfolio?.totalValue || 0);
   const cash = Number(portfolio?.cash || 0);
@@ -215,7 +206,9 @@ export default function HomePage({
       icon: "📈",
       title: "상승/하락 TOP",
       span: "full",
-      sparkline: moversRows.slice(0, 6).map((r) => Number(r.changeRate || 0)),
+      sparkline: [...(moversPayload.gainers || []), ...(moversPayload.losers || [])]
+        .slice(0, 6)
+        .map((r) => Number(r.changeRate || 0)),
       body: (
         <div className="home-movers-grid">
           <MoverPanel title="상승 TOP" tone="up" rows={upMovers} loading={moversLoading} error={moversError} fmt={fmt} onSelectCode={openTradeFromMarket} />
