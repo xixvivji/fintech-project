@@ -118,6 +118,25 @@ public class StockService {
         return fromKis;
     }
 
+    public List<TopVolumeStockDto> getTopVolumeStocks(String date, int limit) {
+        LocalDate targetDate = parseEndDateOrToday(date);
+        int safeLimit = Math.max(1, Math.min(limit, 50));
+        LocalDate tradeDate = dailyPriceRepository
+                .findLatestTradeDateOnOrBefore(targetDate)
+                .orElseThrow(() -> new IllegalStateException("No daily_price data on or before " + targetDate));
+
+        return dailyPriceRepository.findByTradeDateOrderByVolumeDesc(tradeDate).stream()
+                .filter(row -> row.getVolume() != null)
+                .limit(safeLimit)
+                .map(row -> new TopVolumeStockDto(
+                        row.getCode(),
+                        row.getTradeDate().toString(),
+                        row.getClosePrice(),
+                        row.getVolume()
+                ))
+                .toList();
+    }
+
     public double getLatestClosePrice(String stockCode) {
         String normalizedCode = normalizeCode(stockCode);
         return dailyPriceRepository.findTopByCodeOrderByTradeDateDesc(normalizedCode)
@@ -184,9 +203,7 @@ public class StockService {
             row.setHighPrice(dto.getHigh());
             row.setLowPrice(dto.getLow());
             row.setClosePrice(dto.getClose());
-            if (row.getVolume() == null) {
-                row.setVolume(null);
-            }
+            row.setVolume(dto.getVolume());
             toSave.add(row);
         }
         dailyPriceRepository.saveAll(toSave);
@@ -335,7 +352,11 @@ public class StockService {
                 if (open == null || high == null || low == null || close == null) continue;
 
                 if (seenDates.add(formattedDate)) {
-                    chartData.add(new ChartDataDto(formattedDate, open, high, low, close));
+                    Long volume = parseLongOrNull(d.get("acml_vol"));
+                    if (volume == null) {
+                        volume = parseLongOrNull(d.get("stck_acml_vol"));
+                    }
+                    chartData.add(new ChartDataDto(formattedDate, open, high, low, close, volume));
                 }
                 if (oldestInChunk == null || rawDate.compareTo(oldestInChunk) < 0) {
                     oldestInChunk = rawDate;
@@ -459,6 +480,15 @@ public class StockService {
         }
     }
 
+    private Long parseLongOrNull(String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
     private LocalDate parseEndDateOrToday(String endDate) {
         if (endDate == null || endDate.isBlank()) {
             return LocalDate.now();
@@ -522,7 +552,8 @@ public class StockService {
                 row.getOpenPrice(),
                 row.getHighPrice(),
                 row.getLowPrice(),
-                row.getClosePrice()
+                row.getClosePrice(),
+                row.getVolume()
         );
     }
 
@@ -546,3 +577,5 @@ public class StockService {
         }
     }
 }
+
+

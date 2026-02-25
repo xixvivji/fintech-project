@@ -85,6 +85,16 @@ public class SimulationController {
         return simulationService.getRankings(userId);
     }
 
+    @GetMapping("/popular-stocks")
+    public List<SimPopularStockDto> getPopularStocks(
+            @RequestHeader("Authorization") String authorizationHeader,
+            @RequestParam(defaultValue = "10") int limit,
+            @RequestParam(defaultValue = "7") int days
+    ) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
+        return simulationService.getPopularStocks(userId, limit, days);
+    }
+
     @GetMapping("/rankings/{targetUserId}/portfolio")
     public SimRankingPortfolioSummaryDto getRankingPortfolioSummary(
             @RequestHeader("Authorization") String authorizationHeader,

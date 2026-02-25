@@ -1,24 +1,24 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
-import StockChartCard from "../components/StockChartCard";
 
-const HOME_LAYOUT_KEY = "fintech_home_layout_v1";
-const DEFAULT_WIDGET_ORDER = ["metrics", "movers", "watchlist", "ranking", "charts"];
-const DEFAULT_COLLAPSED = {};
+const HOME_LAYOUT_KEY = "fintech_home_layout_v2";
+const AUTH_TOKEN_KEY = "fintech_access_token";
+const DEFAULT_WIDGET_ORDER = ["metrics", "movers", "volume", "watchlist", "ranking"];
 
 function readHomeLayout() {
   try {
     const raw = localStorage.getItem(HOME_LAYOUT_KEY);
-    if (!raw) return { order: DEFAULT_WIDGET_ORDER, collapsed: DEFAULT_COLLAPSED };
+    if (!raw) return { order: DEFAULT_WIDGET_ORDER, collapsed: {} };
     const parsed = JSON.parse(raw);
-    const order = Array.isArray(parsed?.order) ? parsed.order.filter((x) => DEFAULT_WIDGET_ORDER.includes(x)) : DEFAULT_WIDGET_ORDER;
-    const mergedOrder = [...order, ...DEFAULT_WIDGET_ORDER.filter((x) => !order.includes(x))];
+    const order = Array.isArray(parsed?.order)
+      ? parsed.order.filter((x) => DEFAULT_WIDGET_ORDER.includes(x))
+      : DEFAULT_WIDGET_ORDER;
     return {
-      order: mergedOrder,
-      collapsed: parsed?.collapsed && typeof parsed.collapsed === "object" ? parsed.collapsed : DEFAULT_COLLAPSED,
+      order: [...order, ...DEFAULT_WIDGET_ORDER.filter((x) => !order.includes(x))],
+      collapsed: parsed?.collapsed && typeof parsed.collapsed === "object" ? parsed.collapsed : {},
     };
   } catch {
-    return { order: DEFAULT_WIDGET_ORDER, collapsed: DEFAULT_COLLAPSED };
+    return { order: DEFAULT_WIDGET_ORDER, collapsed: {} };
   }
 }
 
@@ -34,6 +34,14 @@ function calcMovePercent(rows) {
   const curr = Number(rows[rows.length - 1]?.close);
   if (!Number.isFinite(prev) || !Number.isFinite(curr) || prev === 0) return null;
   return ((curr - prev) / prev) * 100;
+}
+
+function readAccessToken() {
+  try {
+    return localStorage.getItem(AUTH_TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
 }
 
 export default function HomePage({
@@ -57,11 +65,16 @@ export default function HomePage({
   rankingUserSummaryLoading,
 }) {
   const [layoutOrder, setLayoutOrder] = useState(DEFAULT_WIDGET_ORDER);
-  const [collapsedMap, setCollapsedMap] = useState(DEFAULT_COLLAPSED);
+  const [collapsedMap, setCollapsedMap] = useState({});
   const [draggingWidget, setDraggingWidget] = useState("");
+
   const [moversLoading, setMoversLoading] = useState(false);
   const [moversError, setMoversError] = useState("");
   const [moversRows, setMoversRows] = useState([]);
+
+  const [popularLoading, setPopularLoading] = useState(false);
+  const [popularError, setPopularError] = useState("");
+  const [popularRows, setPopularRows] = useState([]);
 
   useEffect(() => {
     const saved = readHomeLayout();
@@ -74,18 +87,22 @@ export default function HomePage({
   }, [layoutOrder, collapsedMap]);
 
   useEffect(() => {
-    if (isLoggedIn) loadRankings?.();
+    if (isLoggedIn) {
+      loadRankings?.();
+    }
   }, [isLoggedIn, loadRankings]);
 
   const moverUniverse = useMemo(() => {
-    const preferred = Array.from(new Set([...(watchlistCodes || []), "005930", "000660", "035420", "035720", "005380", "000270"]));
+    const preferred = Array.from(
+      new Set([...(watchlistCodes || []), "005930", "000660", "035420", "035720", "005380", "000270"])
+    );
     return preferred.slice(0, 10);
   }, [watchlistCodes]);
 
   useEffect(() => {
     let cancelled = false;
     async function loadMovers() {
-      if (!apiBaseUrl || !moverUniverse.length) return;
+      if (!apiBaseUrl || moverUniverse.length === 0) return;
       setMoversLoading(true);
       setMoversError("");
       try {
@@ -95,21 +112,22 @@ export default function HomePage({
               params: { months: 1, endDate: chartEndDate || undefined },
             });
             const rows = Array.isArray(res.data) ? res.data : [];
-            const changeRate = calcMovePercent(rows);
             const last = rows[rows.length - 1];
             return {
               code,
               name: getStockNameByCode(code),
-              changeRate,
+              changeRate: calcMovePercent(rows),
               close: Number(last?.close || 0),
             };
           })
         );
-        if (cancelled) return;
-        setMoversRows(results.filter((x) => Number.isFinite(x.changeRate)));
+        if (!cancelled) {
+          setMoversRows(results.filter((r) => Number.isFinite(r.changeRate)));
+        }
       } catch (err) {
-        if (cancelled) return;
-        setMoversError(err?.response?.data?.message || "상승/하락 데이터를 불러오지 못했습니다.");
+        if (!cancelled) {
+          setMoversError(err?.response?.data?.message || "상승/하락 데이터를 불러오지 못했습니다.");
+        }
       } finally {
         if (!cancelled) setMoversLoading(false);
       }
@@ -118,26 +136,50 @@ export default function HomePage({
     return () => {
       cancelled = true;
     };
-  }, [apiBaseUrl, chartEndDate, getStockNameByCode, moverUniverse]);
+  }, [apiBaseUrl, moverUniverse, chartEndDate, getStockNameByCode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadPopularStocks() {
+      if (!apiBaseUrl || !isLoggedIn) return;
+      setPopularLoading(true);
+      setPopularError("");
+      try {
+        const token = readAccessToken();
+        const res = await axios.get(`${apiBaseUrl}/api/sim/popular-stocks`, {
+          params: { limit: 10, days: 7 },
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!cancelled) setPopularRows(Array.isArray(res.data) ? res.data : []);
+      } catch (err) {
+        if (!cancelled) {
+          setPopularError(err?.response?.data?.message || "리그 인기 종목을 불러오지 못했습니다.");
+        }
+      } finally {
+        if (!cancelled) setPopularLoading(false);
+      }
+    }
+    loadPopularStocks();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBaseUrl, isLoggedIn]);
 
   const top5 = useMemo(() => (rankings || []).slice(0, 5), [rankings]);
-  const upMovers = useMemo(() => [...moversRows].sort((a, b) => (b.changeRate ?? -999) - (a.changeRate ?? -999)).slice(0, 5), [moversRows]);
-  const downMovers = useMemo(() => [...moversRows].sort((a, b) => (a.changeRate ?? 999) - (b.changeRate ?? 999)).slice(0, 5), [moversRows]);
-  const watchTop = useMemo(() => {
-    const base = (watchlistCodes || []).slice(0, 2);
-    if (base.length >= 2) return base;
-    return Array.from(new Set([...base, "005930", "000660"])).slice(0, 2);
-  }, [watchlistCodes]);
+  const upMovers = useMemo(
+    () => [...moversRows].sort((a, b) => (b.changeRate ?? -999) - (a.changeRate ?? -999)).slice(0, 5),
+    [moversRows]
+  );
+  const downMovers = useMemo(
+    () => [...moversRows].sort((a, b) => (a.changeRate ?? 999) - (b.changeRate ?? 999)).slice(0, 5),
+    [moversRows]
+  );
 
   const totalValue = Number(portfolio?.totalValue || 0);
   const cash = Number(portfolio?.cash || 0);
   const unrealized = Number(portfolio?.unrealizedPnl || 0);
   const realized = Number(portfolio?.realizedPnl || 0);
   const returnRate = Number(portfolio?.returnRate || 0);
-
-  const toggleCollapsed = (id) => {
-    setCollapsedMap((prev) => ({ ...prev, [id]: !prev[id] }));
-  };
 
   const reorderWidgets = (fromId, toId) => {
     if (!fromId || !toId || fromId === toId) return;
@@ -154,65 +196,63 @@ export default function HomePage({
 
   const widgetDefs = {
     metrics: {
-      icon: "◈",
+      icon: "📊",
       title: "계좌 요약",
       span: "full",
-      sparkline: [
-        cash * 0.9 + totalValue * 0.1,
-        cash * 0.7 + totalValue * 0.3,
-        cash * 0.5 + totalValue * 0.5,
-        totalValue * 0.85,
-        totalValue,
-      ],
+      sparkline: [cash, totalValue * 0.6, totalValue * 0.75, totalValue * 0.9, totalValue],
       body: (
         <div className="home-grid home-grid-metrics">
-          <MetricCard label="공용 기준일" value={leagueState?.currentDate || "-"} tone="neutral" />
+          <MetricCard label="공용 기준일" value={leagueState?.currentDate || chartEndDate || "-"} tone="neutral" />
           <MetricCard label="리그 상태" value={leagueState?.running ? "진행 중" : "정지"} tone={leagueState?.running ? "up" : "neutral"} />
           <MetricCard label="총자산" value={isLoggedIn ? `${fmt(totalValue)}원` : "로그인 필요"} tone="neutral" />
           <MetricCard label="예수금" value={isLoggedIn ? `${fmt(cash)}원` : "-"} tone="neutral" />
-          <MetricCard label="미실현손익" value={isLoggedIn ? `${unrealized > 0 ? "+" : ""}${fmt(unrealized)}원` : "-"} tone={unrealized >= 0 ? "up" : "down"} />
+          <MetricCard label="미실현손익" value={isLoggedIn ? `${fmtSigned(unrealized, fmt)}원` : "-"} tone={unrealized >= 0 ? "up" : "down"} />
           <MetricCard label="수익률" value={isLoggedIn ? `${returnRate > 0 ? "+" : ""}${returnRate.toFixed(2)}%` : "-"} tone={returnRate >= 0 ? "up" : "down"} />
         </div>
       ),
     },
     movers: {
-      icon: "↕",
+      icon: "📈",
       title: "상승/하락 TOP",
       span: "full",
       sparkline: moversRows.slice(0, 6).map((r) => Number(r.changeRate || 0)),
       body: (
         <div className="home-movers-grid">
-          <MoverPanel
-            title="상승 TOP"
-            tone="up"
-            rows={upMovers}
-            loading={moversLoading}
-            error={moversError}
-            fmt={fmt}
-            onSelectCode={openTradeFromMarket}
-          />
-          <MoverPanel
-            title="하락 TOP"
-            tone="down"
-            rows={downMovers}
-            loading={moversLoading}
-            error={moversError}
-            fmt={fmt}
-            onSelectCode={openTradeFromMarket}
-          />
+          <MoverPanel title="상승 TOP" tone="up" rows={upMovers} loading={moversLoading} error={moversError} fmt={fmt} onSelectCode={openTradeFromMarket} />
+          <MoverPanel title="하락 TOP" tone="down" rows={downMovers} loading={moversLoading} error={moversError} fmt={fmt} onSelectCode={openTradeFromMarket} />
         </div>
       ),
     },
+    volume: {
+      icon: "🔥",
+      title: "리그 인기 종목 TOP 10",
+      span: "full",
+      sparkline: popularRows.slice(0, 8).map((x) => Number(x.executionCount || 0)),
+      body: (
+        <PopularStocksPanel
+          rows={popularRows}
+          loading={popularLoading}
+          error={popularError}
+          fmt={fmt}
+          getStockNameByCode={getStockNameByCode}
+          onOpenTrade={openTradeFromMarket}
+          onOpenMarket={(code) => {
+            openTradeFromMarket?.(code);
+            navigateTo("/market");
+          }}
+        />
+      ),
+    },
     watchlist: {
-      icon: "★",
-      title: "관심종목 & 보유 요약",
+      icon: "⭐",
+      title: "관심종목 / 보유 요약",
       span: "wide",
       sparkline: (portfolio?.holdings || []).slice(0, 6).map((h) => Number(h.unrealizedPnl || 0)),
       body: (
         <>
-          {!isLoggedIn && <div className="home-empty">로그인하면 관심종목과 개인 계좌 정보를 볼 수 있습니다.</div>}
+          {!isLoggedIn && <div className="home-empty">로그인하면 관심종목과 개인 계좌 요약을 볼 수 있습니다.</div>}
           {isLoggedIn && (!watchlistCodes || watchlistCodes.length === 0) && (
-            <div className="home-empty">아직 관심종목이 없습니다. 차트 페이지에서 추가해보세요.</div>
+            <div className="home-empty">관심종목이 없습니다. 차트 페이지에서 추가해보세요.</div>
           )}
           {isLoggedIn && (watchlistCodes || []).length > 0 && (
             <div className="home-watchlist">
@@ -225,7 +265,7 @@ export default function HomePage({
             </div>
           )}
           {isLoggedIn && portfolio?.holdings?.length > 0 && (
-            <div style={{ marginTop: 14 }}>
+            <div className="home-watchlist-holdings">
               <div className="home-panel-header">
                 <strong>보유 종목</strong>
                 <button type="button" className="home-link-btn" onClick={() => navigateTo("/sim")}>모의투자에서 보기</button>
@@ -235,7 +275,7 @@ export default function HomePage({
                   <div key={`hold-${h.code}`} className="home-mini-row">
                     <div>{getStockNameByCode(h.code)} ({h.code})</div>
                     <div>{h.quantity}주</div>
-                    <div>{fmt(h.currentPrice || 0)}원</div>
+                    <div>{fmt(Number(h.currentPrice || 0))}원</div>
                   </div>
                 ))}
               </div>
@@ -245,7 +285,7 @@ export default function HomePage({
       ),
     },
     ranking: {
-      icon: "♟",
+      icon: "🏆",
       title: "수익률 랭킹",
       span: "narrow",
       sparkline: top5.map((r) => Number(r.returnRate || 0)),
@@ -272,37 +312,8 @@ export default function HomePage({
               ))}
             </div>
           )}
-          <div className="home-note">
-            실현손익 {isLoggedIn ? `${realized > 0 ? "+" : ""}${fmt(realized)}원` : "-"} · 보유종목 {portfolio?.holdings?.length || 0}개
-          </div>
+          <div className="home-note">실현손익 {isLoggedIn ? `${fmtSigned(realized, fmt)}원` : "-"} · 보유종목 {portfolio?.holdings?.length || 0}개</div>
         </>
-      ),
-    },
-    charts: {
-      icon: "◷",
-      title: "빠른 차트",
-      span: "full",
-      sparkline: watchTop.map((_, idx) => idx + 1),
-      body: (
-        <div className="home-grid home-grid-charts">
-          {watchTop.map((code) => (
-            <StockChartCard
-              key={`home-chart-${code}-${chartEndDate || "today"}`}
-              apiBaseUrl={apiBaseUrl}
-              code={code}
-              months={6}
-              endDate={chartEndDate}
-              height={240}
-              title={`${getStockNameByCode(code)} (${code})`}
-              subtitle={`홈 미니차트 · 기준일 ${chartEndDate || "오늘"}`}
-              headerActions={
-                <button type="button" className="app-nav-btn" onClick={() => openTradeFromMarket?.(code)}>
-                  주문
-                </button>
-              }
-            />
-          ))}
-        </div>
       ),
     },
   };
@@ -312,20 +323,28 @@ export default function HomePage({
       <section className="home-hero">
         <div>
           <div className="home-hero-kicker">Mock Investing League</div>
-          <h2 className="home-hero-title">
-            {isLoggedIn ? `${currentUser?.name || "사용자"}님의 투자 대시보드` : "공용 리그 대시보드"}
-          </h2>
+          <h2 className="home-hero-title">{isLoggedIn ? `${currentUser?.name || "사용자"}의 투자 대시보드` : "공용 리그 대시보드"}</h2>
           <div className="home-hero-sub">
-            공용 기준일 <strong>{leagueState?.currentDate || chartEndDate || "-"}</strong> · 상태{" "}
-            <strong>{leagueState?.running ? "진행 중" : "정지"}</strong>
+            공용 기준일 <strong>{leagueState?.currentDate || chartEndDate || "-"}</strong> · 상태 <strong>{leagueState?.running ? "진행 중" : "정지"}</strong>
           </div>
         </div>
-        <div className="home-hero-actions">
-          <button type="button" className="app-nav-btn active" onClick={() => navigateTo("/sim")}>모의투자</button>
-          <button type="button" className="app-nav-btn" onClick={() => navigateTo("/charts")}>차트</button>
-          <button type="button" className="app-nav-btn" onClick={() => navigateTo("/league")}>리그</button>
-          <button type="button" className="app-nav-btn" onClick={() => navigateTo("/market")}>종목정보</button>
-          <button type="button" className="app-nav-btn" onClick={() => navigateTo("/news")}>뉴스·공시</button>
+        <div className="home-hero-summary">
+          <div className="home-hero-pill">
+            <span>리그 시작일</span>
+            <strong>{leagueState?.anchorDate || "-"}</strong>
+          </div>
+          <div className="home-hero-pill">
+            <span>틱 설정</span>
+            <strong>{leagueState?.tickSeconds || 60}초 / {leagueState?.stepDays || 1}일</strong>
+          </div>
+          <div className="home-hero-pill">
+            <span>내 보유종목</span>
+            <strong>{portfolio?.holdings?.length || 0}개</strong>
+          </div>
+          <div className="home-hero-links">
+            <button type="button" className="home-link-btn" onClick={() => navigateTo("/sim")}>모의투자로 이동</button>
+            <button type="button" className="home-link-btn" onClick={() => navigateTo("/league")}>리그 상세 보기</button>
+          </div>
         </div>
       </section>
 
@@ -351,15 +370,15 @@ export default function HomePage({
               <div className="home-widget-header">
                 <div className="home-widget-title-wrap">
                   <span className="home-widget-drag-handle" title="드래그해서 순서 변경">↕</span>
-                  <span className="home-widget-icon" aria-hidden="true">{widget.icon || "•"}</span>
+                  <span className="home-widget-icon" aria-hidden="true">{widget.icon}</span>
                   <strong>{widget.title}</strong>
                 </div>
                 <div className="home-widget-actions">
                   <Sparkline values={widget.sparkline || []} className="home-widget-sparkline" />
                   {widgetId === "watchlist" && <button type="button" className="home-link-btn" onClick={() => navigateTo("/charts")}>차트 관리</button>}
                   {widgetId === "ranking" && <button type="button" className="home-link-btn" onClick={() => navigateTo("/league")}>전체 랭킹</button>}
-                  {widgetId === "movers" && <button type="button" className="home-link-btn" onClick={() => navigateTo("/market")}>종목정보</button>}
-                  <button type="button" className="home-collapse-btn" onClick={() => toggleCollapsed(widgetId)}>
+                  {widgetId === "volume" && <button type="button" className="home-link-btn" onClick={() => navigateTo("/sim")}>모의투자</button>}
+                  <button type="button" className="home-collapse-btn" onClick={() => setCollapsedMap((prev) => ({ ...prev, [widgetId]: !prev[widgetId] }))}>
                     {collapsed ? "열기" : "접기"}
                   </button>
                 </div>
@@ -420,13 +439,8 @@ function Sparkline({ values, className }) {
   const height = 20;
   const range = max - min || 1;
   const points = nums
-    .map((v, i) => {
-      const x = (i / (nums.length - 1)) * width;
-      const y = height - ((v - min) / range) * height;
-      return `${x},${y}`;
-    })
+    .map((v, i) => `${(i / (nums.length - 1)) * width},${height - ((v - min) / range) * height}`)
     .join(" ");
-
   return (
     <svg className={className} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="trend">
       <polyline fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" points={points} />
@@ -457,4 +471,57 @@ function MoverPanel({ title, tone, rows, loading, error, fmt, onSelectCode }) {
       )}
     </div>
   );
+}
+
+function PopularStocksPanel({ rows, loading, error, fmt, getStockNameByCode, onOpenTrade, onOpenMarket }) {
+  return (
+    <div className="home-volume-panel">
+      {loading && <div className="home-empty">불러오는 중...</div>}
+      {!loading && error && <div className="home-empty" style={{ color: "#b91c1c" }}>{error}</div>}
+      {!loading && !error && rows.length === 0 && <div className="home-empty">리그 체결 데이터가 없습니다.</div>}
+      {!loading && !error && rows.length > 0 && (
+        <div className="home-volume-table-wrap">
+          <table className="home-volume-table">
+            <thead>
+              <tr>
+                <th>순위</th>
+                <th>종목</th>
+                <th>현재가</th>
+                <th>체결건수</th>
+                <th>체결수량</th>
+                <th>기준일</th>
+                <th>액션</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, idx) => (
+                <tr key={`popular-${row.code}-${idx}`}>
+                  <td>{idx + 1}</td>
+                  <td>
+                    <button type="button" className="home-link-btn" onClick={() => onOpenMarket?.(row.code)}>
+                      {getStockNameByCode(row.code)} ({row.code})
+                    </button>
+                  </td>
+                  <td className="num">{fmt(Number(row.currentPrice || 0))}원</td>
+                  <td className="num">{fmt(Number(row.executionCount || 0))}</td>
+                  <td className="num">{fmt(Number(row.totalQuantity || 0))}</td>
+                  <td>{row.valuationDate || "-"}</td>
+                  <td>
+                    <button type="button" className="sim-order-mini-btn" onClick={() => onOpenTrade?.(row.code)}>
+                      주문
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function fmtSigned(value, fmt) {
+  const n = Number(value || 0);
+  return `${n > 0 ? "+" : ""}${fmt(n)}`;
 }

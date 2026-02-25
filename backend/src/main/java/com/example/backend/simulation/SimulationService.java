@@ -11,8 +11,10 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -306,11 +308,13 @@ public class SimulationService {
             ));
         }
 
-        rows.sort(
-                Comparator.comparingDouble(SimRankingRow::returnRate).reversed()
-                        .thenComparingDouble(SimRankingRow::totalValue).reversed()
-                        .thenComparingLong(SimRankingRow::userId)
-        );
+        rows.sort((a, b) -> {
+            int byReturnRate = Double.compare(b.returnRate(), a.returnRate());
+            if (byReturnRate != 0) return byReturnRate;
+            int byTotalValue = Double.compare(b.totalValue(), a.totalValue());
+            if (byTotalValue != 0) return byTotalValue;
+            return Long.compare(a.userId(), b.userId());
+        });
 
         List<SimRankingDto> result = new ArrayList<>();
         for (int i = 0; i < rows.size(); i++) {
@@ -328,6 +332,54 @@ public class SimulationService {
             ));
         }
         return result;
+    }
+
+    @Transactional
+    public synchronized List<SimPopularStockDto> getPopularStocks(Long currentUserId, int limit, int days) {
+        validateUserId(currentUserId);
+        int safeLimit = Math.max(1, Math.min(limit, 20));
+        int safeDays = Math.max(1, Math.min(days, 30));
+
+        LocalDate leagueDate = LocalDate.parse(getOrCreateLeagueState().getCurrentDate());
+        LocalDate startDate = leagueDate.minusDays(safeDays - 1L);
+
+        List<SimTradeExecutionEntity> executions = simTradeExecutionRepository.findByValuationDateBetween(
+                startDate.toString(),
+                leagueDate.toString()
+        );
+        if (executions.isEmpty()) {
+            executions = simTradeExecutionRepository.findByValuationDateLessThanEqual(leagueDate.toString());
+        }
+
+        Map<String, PopularStockAggregate> aggregateMap = new HashMap<>();
+        for (SimTradeExecutionEntity execution : executions) {
+            PopularStockAggregate agg = aggregateMap.computeIfAbsent(execution.getCode(), code -> new PopularStockAggregate());
+            agg.code = execution.getCode();
+            agg.executionCount++;
+            agg.totalQuantity += execution.getQuantity();
+            if (agg.latestExecutedAt < execution.getExecutedAt()) {
+                agg.latestExecutedAt = execution.getExecutedAt();
+                agg.latestValuationDate = execution.getValuationDate();
+            }
+        }
+
+        return aggregateMap.values().stream()
+                .sorted((a, b) -> {
+                    int byCount = Long.compare(b.executionCount, a.executionCount);
+                    if (byCount != 0) return byCount;
+                    int byQty = Long.compare(b.totalQuantity, a.totalQuantity);
+                    if (byQty != 0) return byQty;
+                    return a.code.compareTo(b.code);
+                })
+                .limit(safeLimit)
+                .map(a -> new SimPopularStockDto(
+                        a.code,
+                        a.latestValuationDate == null ? leagueDate.toString() : a.latestValuationDate,
+                        a.executionCount,
+                        a.totalQuantity,
+                        round2(stockService.getClosePriceOnOrBefore(a.code, leagueDate))
+                ))
+                .toList();
     }
 
     @Transactional
@@ -624,6 +676,14 @@ public class SimulationService {
         row.setValuationDate(valuationDate == null ? null : valuationDate.toString());
         row.setExecutedAt(System.currentTimeMillis());
         simTradeExecutionRepository.save(row);
+    }
+
+    private static class PopularStockAggregate {
+        private String code;
+        private long executionCount;
+        private long totalQuantity;
+        private long latestExecutedAt;
+        private String latestValuationDate;
     }
 
     private record SimRankingRow(

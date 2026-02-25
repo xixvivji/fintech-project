@@ -21,6 +21,14 @@ public class StockController {
         return stockService.getDailyChart(code, months, endDate);
     }
 
+    @GetMapping("/top-volume")
+    public List<TopVolumeStockDto> getTopVolume(
+            @RequestParam(required = false) String date,
+            @RequestParam(defaultValue = "10") int limit
+    ) {
+        return stockService.getTopVolumeStocks(date, limit);
+    }
+
     @PostMapping("/backfill")
     public StockBackfillResponseDto backfill(@RequestBody StockBackfillRequestDto request) {
         if (request == null) {
