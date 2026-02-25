@@ -261,11 +261,12 @@ export default function App() {
       loadMe();
       loadWatchlist();
       loadLeagueState();
+      loadPortfolio();
     } else {
       setCurrentUser(null);
       setWatchlistCodes([]);
     }
-  }, [authToken, loadLeagueState, loadMe, loadWatchlist]);
+  }, [authToken, loadLeagueState, loadMe, loadPortfolio, loadWatchlist]);
 
   useEffect(() => {
     if (!authToken || path !== "/sim") return;
@@ -276,9 +277,9 @@ export default function App() {
     if (!authToken) return;
     const id = window.setInterval(() => {
       loadLeagueState();
+      loadPortfolio();
       if (path === "/sim") {
         loadReplayState();
-        loadPortfolio();
         if (simOrderTab === "rankings") loadRankings();
       }
     }, 10000);
@@ -523,11 +524,7 @@ export default function App() {
 
   const rankingRowsTop10WithMe = useMemo(() => {
     const rows = Array.isArray(rankings) ? rankings : [];
-    const top10 = rows.slice(0, 10);
-    const meRow = rows.find((r) => r.me);
-    if (!meRow) return top10;
-    if (top10.some((r) => r.userId === meRow.userId)) return top10;
-    return [...top10, meRow];
+    return rows;
   }, [rankings]);
 
   const setHoldingQuickQty = useCallback((code, holdQty, ratio) => {
@@ -701,6 +698,11 @@ export default function App() {
             rankingsLoading={rankingsLoading}
             loadRankings={loadRankings}
             fmt={fmt}
+            getStockNameByCode={getStockNameByCode}
+            openRankingUserSummary={openRankingUserSummary}
+            rankingUserSummary={rankingUserSummary}
+            setRankingUserSummary={setRankingUserSummary}
+            rankingUserSummaryLoading={rankingUserSummaryLoading}
           />
         )}
 

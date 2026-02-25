@@ -3,6 +3,7 @@ import axios from "axios";
 
 const HOME_LAYOUT_KEY = "fintech_home_layout_v2";
 const AUTH_TOKEN_KEY = "fintech_access_token";
+const INITIAL_CASH = 50000000;
 const DEFAULT_WIDGET_ORDER = ["metrics", "movers", "volume", "watchlist", "ranking"];
 
 function readHomeLayout() {
@@ -162,15 +163,19 @@ export default function HomePage({
     };
   }, [apiBaseUrl, isLoggedIn]);
 
-  const top5 = useMemo(() => (rankings || []).slice(0, 5), [rankings]);
+  const top3 = useMemo(() => (rankings || []).slice(0, 3), [rankings]);
   const upMovers = useMemo(() => moversPayload.gainers || [], [moversPayload]);
   const downMovers = useMemo(() => moversPayload.losers || [], [moversPayload]);
 
+  const hasPortfolio = Boolean(portfolio);
   const totalValue = Number(portfolio?.totalValue || 0);
   const cash = Number(portfolio?.cash || 0);
   const unrealized = Number(portfolio?.unrealizedPnl || 0);
   const realized = Number(portfolio?.realizedPnl || 0);
-  const returnRate = Number(portfolio?.returnRate || 0);
+  const totalPnl = realized + unrealized;
+  const returnRate = isLoggedIn && hasPortfolio && Number.isFinite(totalValue)
+    ? (totalPnl / INITIAL_CASH) * 100
+    : 0;
 
   const reorderWidgets = (fromId, toId) => {
     if (!fromId || !toId || fromId === toId) return;
@@ -195,10 +200,10 @@ export default function HomePage({
         <div className="home-grid home-grid-metrics">
           <MetricCard label="공용 기준일" value={leagueState?.currentDate || chartEndDate || "-"} tone="neutral" />
           <MetricCard label="리그 상태" value={leagueState?.running ? "진행 중" : "정지"} tone={leagueState?.running ? "up" : "neutral"} />
-          <MetricCard label="총자산" value={isLoggedIn ? `${fmt(totalValue)}원` : "로그인 필요"} tone="neutral" />
-          <MetricCard label="예수금" value={isLoggedIn ? `${fmt(cash)}원` : "-"} tone="neutral" />
-          <MetricCard label="미실현손익" value={isLoggedIn ? `${fmtSigned(unrealized, fmt)}원` : "-"} tone={unrealized >= 0 ? "up" : "down"} />
-          <MetricCard label="수익률" value={isLoggedIn ? `${returnRate > 0 ? "+" : ""}${returnRate.toFixed(2)}%` : "-"} tone={returnRate >= 0 ? "up" : "down"} />
+          <MetricCard label="총자산" value={isLoggedIn ? (hasPortfolio ? `${fmt(totalValue)}원` : "-") : "로그인 필요"} tone="neutral" />
+          <MetricCard label="예수금" value={isLoggedIn ? (hasPortfolio ? `${fmt(cash)}원` : "-") : "-"} tone="neutral" />
+          <MetricCard label="미실현손익" value={isLoggedIn ? (hasPortfolio ? `${fmtSigned(unrealized, fmt)}원` : "-") : "-"} tone={unrealized >= 0 ? "up" : "down"} />
+          <MetricCard label="수익률" value={isLoggedIn ? (hasPortfolio ? `${returnRate > 0 ? "+" : ""}${returnRate.toFixed(2)}%` : "-") : "-"} tone={returnRate >= 0 ? "up" : "down"} />
         </div>
       ),
     },
@@ -281,14 +286,14 @@ export default function HomePage({
       icon: "🏆",
       title: "수익률 랭킹",
       span: "narrow",
-      sparkline: top5.map((r) => Number(r.returnRate || 0)),
+      sparkline: top3.map((r) => Number(r.returnRate || 0)),
       body: (
         <>
           {rankingsLoading && <div className="home-empty">랭킹을 불러오는 중...</div>}
-          {!rankingsLoading && top5.length === 0 && <div className="home-empty">랭킹 데이터가 없습니다.</div>}
-          {!rankingsLoading && top5.length > 0 && (
+          {!rankingsLoading && top3.length === 0 && <div className="home-empty">랭킹 데이터가 없습니다.</div>}
+          {!rankingsLoading && top3.length > 0 && (
             <div className="home-ranking">
-              {top5.map((row) => (
+              {top3.map((row) => (
                 <button
                   key={`home-rank-${row.userId}`}
                   type="button"
@@ -305,7 +310,7 @@ export default function HomePage({
               ))}
             </div>
           )}
-          <div className="home-note">실현손익 {isLoggedIn ? `${fmtSigned(realized, fmt)}원` : "-"} · 보유종목 {portfolio?.holdings?.length || 0}개</div>
+          <div className="home-note">실현손익 {isLoggedIn && hasPortfolio ? `${fmtSigned(realized, fmt)}원` : "-"} · 보유종목 {portfolio?.holdings?.length || 0}개</div>
         </>
       ),
     },
