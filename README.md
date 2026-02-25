@@ -226,8 +226,3 @@ docker exec -it fintech-postgres psql -U fintech -d fintech -P pager=off -c "SEL
 - 본 프로젝트의 뉴스·공시 화면은 현재 Mock 데이터 기반입니다.
 - 외부 시세/뉴스/공시 데이터 연동 시, 각 제공자의 이용약관 및 재배포 정책을 반드시 확인해야 합니다.
 ```
-
-다음으로 원하면
-1. `docs/screenshots/` 폴더 구조까지 만들어주기
-2. README에 `시연 영상 링크` 섹션 추가
-3. `트러블슈팅`/`회고` 분리한 버전으로 더 포트폴리오스럽게 다듬기
