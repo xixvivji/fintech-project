@@ -2,6 +2,9 @@ package com.example.backend.challenge;
 
 import com.example.backend.auth.UserEntity;
 import com.example.backend.auth.UserRepository;
+import com.example.backend.feed.FeedCommentRepository;
+import com.example.backend.feed.FeedPostEntity;
+import com.example.backend.feed.FeedPostRepository;
 import com.example.backend.notification.NotificationService;
 import com.example.backend.simulation.PortfolioResponseDto;
 import com.example.backend.simulation.SimLeagueStateDto;
@@ -20,17 +23,23 @@ public class ChallengeService {
     private final UserRepository userRepository;
     private final SimulationService simulationService;
     private final NotificationService notificationService;
+    private final FeedPostRepository feedPostRepository;
+    private final FeedCommentRepository feedCommentRepository;
 
     public ChallengeService(ChallengeRepository challengeRepository,
                             ChallengeParticipantRepository challengeParticipantRepository,
                             UserRepository userRepository,
                             SimulationService simulationService,
-                            NotificationService notificationService) {
+                            NotificationService notificationService,
+                            FeedPostRepository feedPostRepository,
+                            FeedCommentRepository feedCommentRepository) {
         this.challengeRepository = challengeRepository;
         this.challengeParticipantRepository = challengeParticipantRepository;
         this.userRepository = userRepository;
         this.simulationService = simulationService;
         this.notificationService = notificationService;
+        this.feedPostRepository = feedPostRepository;
+        this.feedCommentRepository = feedCommentRepository;
     }
 
     @Transactional
@@ -59,7 +68,9 @@ public class ChallengeService {
             e.setHabitDailyBuyQuantity(dailyQty);
             e.setHabitRequiredDays(requiredDays);
         }
-        e.setVisibility(normalizeVisibility(request.getVisibility()));
+        String visibility = normalizeVisibility(request.getVisibility());
+        e.setVisibility(visibility);
+        e.setPrivatePassword(normalizePrivatePassword(visibility, request.getPrivatePassword()));
         int maxParticipants = request.getMaxParticipants() == null ? 100 : request.getMaxParticipants();
         if (maxParticipants < 1 || maxParticipants > 10000) throw new IllegalArgumentException("maxParticipants out of range.");
         e.setMaxParticipants(maxParticipants);
@@ -72,6 +83,7 @@ public class ChallengeService {
         e.setCreatedAt(System.currentTimeMillis());
 
         ChallengeEntity saved = challengeRepository.save(e);
+        autoJoinOwner(saved, userId);
         notificationService.createForUser(userId, "CHALLENGE_CREATED", "챌린지 생성 완료",
                 "'" + saved.getTitle() + "' 챌린지가 생성되었습니다.", "CHALLENGE", saved.getId());
         return toDto(saved, userId, resolveReferenceDate(userId));
@@ -84,20 +96,22 @@ public class ChallengeService {
         rows.sort(Comparator.comparing(ChallengeEntity::getCreatedAt).reversed());
         List<ChallengeDto> out = new ArrayList<>();
         for (ChallengeEntity row : rows) {
-            if ("PRIVATE".equalsIgnoreCase(row.getVisibility())) continue;
             out.add(toDto(row, userId, refDate));
         }
         return out;
     }
 
     @Transactional(readOnly = true)
-    public ChallengeDto get(Long userId, Long challengeId) {
-        return toDto(getChallenge(challengeId), userId, resolveReferenceDate(userId));
+    public ChallengeDto get(Long userId, Long challengeId, String password) {
+        ChallengeEntity challenge = getChallenge(challengeId);
+        validatePrivateAccess(userId, challenge, password);
+        return toDto(challenge, userId, resolveReferenceDate(userId));
     }
 
     @Transactional
-    public ChallengeParticipantDto join(Long userId, Long challengeId) {
+    public ChallengeParticipantDto join(Long userId, Long challengeId, String password) {
         ChallengeEntity challenge = getChallenge(challengeId);
+        validatePrivateAccess(userId, challenge, password);
         LocalDate refDate = resolveReferenceDate(userId);
         if (refDate.isAfter(LocalDate.parse(challenge.getEndDate()))) {
             throw new IllegalArgumentException("Ended challenge cannot be joined.");
@@ -137,17 +151,35 @@ public class ChallengeService {
         challengeParticipantRepository.deleteByChallengeIdAndUserId(challengeId, userId);
     }
 
+    @Transactional
+    public void delete(Long userId, Long challengeId) {
+        ChallengeEntity challenge = getChallenge(challengeId);
+        if (!Objects.equals(challenge.getOwnerUserId(), userId)) {
+            throw new IllegalArgumentException("Only challenge owner can delete challenge.");
+        }
+        for (FeedPostEntity post : feedPostRepository.findByChallengeId(challengeId)) {
+            if (post.getId() != null) {
+                feedCommentRepository.deleteByPostId(post.getId());
+            }
+        }
+        feedPostRepository.deleteByChallengeId(challengeId);
+        challengeParticipantRepository.deleteByChallengeId(challengeId);
+        challengeRepository.delete(challenge);
+    }
+
     @Transactional(readOnly = true)
-    public List<ChallengeParticipantDto> participants(Long challengeId) {
-        getChallenge(challengeId);
+    public List<ChallengeParticipantDto> participants(Long requesterUserId, Long challengeId, String password) {
+        ChallengeEntity challenge = getChallenge(challengeId);
+        validatePrivateAccess(requesterUserId, challenge, password);
         return challengeParticipantRepository.findByChallengeIdOrderByJoinedAtAsc(challengeId).stream()
                 .map(p -> new ChallengeParticipantDto(p.getUserId(), getUser(p.getUserId()).getName(), p.getJoinedAt(), round2(p.getBaselineTotalValue()), p.getBaselineDate()))
                 .toList();
     }
 
     @Transactional(readOnly = true)
-    public ChallengeProgressDto progress(Long challengeId, Long targetUserId) {
+    public ChallengeProgressDto progress(Long requesterUserId, Long challengeId, Long targetUserId, String password) {
         ChallengeEntity challenge = getChallenge(challengeId);
+        validatePrivateAccess(requesterUserId, challenge, password);
         ChallengeParticipantEntity p = challengeParticipantRepository.findByChallengeIdAndUserId(challengeId, targetUserId)
                 .orElseThrow(() -> new IllegalArgumentException("Participant not found."));
         PortfolioResponseDto pf = simulationService.getPortfolio(targetUserId);
@@ -155,8 +187,19 @@ public class ChallengeService {
     }
 
     @Transactional(readOnly = true)
-    public List<ChallengeLeaderboardRowDto> leaderboard(Long requesterUserId, Long challengeId) {
+    public List<ChallengeHabitDayDto> habitCalendar(Long requesterUserId, Long challengeId, Long targetUserId, String password) {
         ChallengeEntity challenge = getChallenge(challengeId);
+        validatePrivateAccess(requesterUserId, challenge, password);
+        if (!"DAILY_BUY_QUANTITY".equalsIgnoreCase(challenge.getGoalType())) return List.of();
+        challengeParticipantRepository.findByChallengeIdAndUserId(challengeId, targetUserId)
+                .orElseThrow(() -> new IllegalArgumentException("Participant not found."));
+        return buildHabitCalendarDays(targetUserId, challenge);
+    }
+
+    @Transactional(readOnly = true)
+    public List<ChallengeLeaderboardRowDto> leaderboard(Long requesterUserId, Long challengeId, String password) {
+        ChallengeEntity challenge = getChallenge(challengeId);
+        validatePrivateAccess(requesterUserId, challenge, password);
         List<RowCalc> rows = new ArrayList<>();
         for (ChallengeParticipantEntity p : challengeParticipantRepository.findByChallengeIdOrderByJoinedAtAsc(challengeId)) {
             PortfolioResponseDto pf = simulationService.getPortfolio(p.getUserId());
@@ -273,21 +316,54 @@ public class ChallengeService {
         if (!"PUBLIC".equals(v) && !"PRIVATE".equals(v)) throw new IllegalArgumentException("visibility must be PUBLIC or PRIVATE.");
         return v;
     }
+    private String normalizePrivatePassword(String visibility, String password) {
+        if (!"PRIVATE".equalsIgnoreCase(visibility)) return null;
+        if (password == null || password.isBlank()) throw new IllegalArgumentException("privatePassword is required for PRIVATE challenge.");
+        String v = password.trim();
+        if (v.length() < 4 || v.length() > 50) throw new IllegalArgumentException("privatePassword length must be 4~50.");
+        return v;
+    }
     private LocalDate parseDate(String s, String field) {
         if (s == null || s.isBlank()) throw new IllegalArgumentException(field + " is required.");
         try { return LocalDate.parse(s.trim()); } catch (Exception e) { throw new IllegalArgumentException(field + " must be yyyy-MM-dd."); }
     }
     private double round2(double v) { return Math.round(v * 100.0) / 100.0; }
 
+    private void autoJoinOwner(ChallengeEntity challenge, Long ownerUserId) {
+        if (challenge == null || challenge.getId() == null || ownerUserId == null) return;
+        if (challengeParticipantRepository.findByChallengeIdAndUserId(challenge.getId(), ownerUserId).isPresent()) return;
+        PortfolioResponseDto pf = simulationService.getPortfolio(ownerUserId);
+        ChallengeParticipantEntity p = new ChallengeParticipantEntity();
+        p.setChallengeId(challenge.getId());
+        p.setUserId(ownerUserId);
+        p.setJoinedAt(System.currentTimeMillis());
+        p.setBaselineTotalValue(pf.getTotalValue());
+        p.setBaselineDate(pf.getValuationDate() == null ? resolveReferenceDate(ownerUserId).toString() : pf.getValuationDate());
+        challengeParticipantRepository.save(p);
+    }
+
+    private void validatePrivateAccess(Long userId, ChallengeEntity challenge, String password) {
+        if (!"PRIVATE".equalsIgnoreCase(challenge.getVisibility())) return;
+        if (Objects.equals(challenge.getOwnerUserId(), userId)) return;
+        if (challengeParticipantRepository.findByChallengeIdAndUserId(challenge.getId(), userId).isPresent()) return;
+        String expected = challenge.getPrivatePassword();
+        if (expected != null && password != null && expected.equals(password.trim())) return;
+        throw new IllegalArgumentException("비공개 챌린지 비밀번호가 필요합니다.");
+    }
+
     private int calcHabitAchievedDays(Long userId, ChallengeEntity challenge) {
+        return (int) buildHabitCalendarDays(userId, challenge).stream().filter(ChallengeHabitDayDto::isAchieved).count();
+    }
+
+    private List<ChallengeHabitDayDto> buildHabitCalendarDays(Long userId, ChallengeEntity challenge) {
         String habitCode = challenge.getHabitCode();
         int dailyQty = challenge.getHabitDailyBuyQuantity() == null ? 1 : challenge.getHabitDailyBuyQuantity();
-        if (habitCode == null || habitCode.isBlank()) return 0;
+        if (habitCode == null || habitCode.isBlank()) return List.of();
         LocalDate start = LocalDate.parse(challenge.getStartDate());
         LocalDate end = LocalDate.parse(challenge.getEndDate());
         LocalDate refDate = resolveReferenceDate(userId);
         LocalDate effectiveEnd = refDate.isBefore(end) ? refDate : end;
-        if (effectiveEnd.isBefore(start)) return 0;
+        if (effectiveEnd.isBefore(start)) return List.of();
 
         Map<String, Integer> buyQtyByDate = new HashMap<>();
         for (TradeExecutionDto row : simulationService.getTradeExecutions(userId)) {
@@ -300,13 +376,17 @@ public class ChallengeService {
             if (vd.isBefore(start) || vd.isAfter(effectiveEnd)) continue;
             buyQtyByDate.merge(d, row.getQuantity(), Integer::sum);
         }
-        int achievedDays = 0;
+        List<ChallengeHabitDayDto> out = new ArrayList<>();
         LocalDate cursor = start;
-        while (!cursor.isAfter(effectiveEnd)) {
-            if (buyQtyByDate.getOrDefault(cursor.toString(), 0) >= dailyQty) achievedDays++;
+        while (!cursor.isAfter(end)) {
+            String date = cursor.toString();
+            int qty = buyQtyByDate.getOrDefault(date, 0);
+            boolean future = cursor.isAfter(effectiveEnd);
+            boolean achieved = !future && qty >= dailyQty;
+            out.add(new ChallengeHabitDayDto(date, qty, dailyQty, achieved, future));
             cursor = cursor.plusDays(1);
         }
-        return achievedDays;
+        return out;
     }
 
     private static class RowCalc {

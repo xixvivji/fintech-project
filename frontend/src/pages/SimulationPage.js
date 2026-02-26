@@ -1,9 +1,11 @@
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import axios from "axios";
 import StockChartCard from "../components/StockChartCard";
 
 export default function SimulationPage(props) {
   const {
     apiBaseUrl,
+    authToken,
     isLoggedIn,
     replayLoading,
     simLoading,
@@ -61,6 +63,139 @@ export default function SimulationPage(props) {
     setOrderConfirmDraft,
     confirmOrderDraft,
   } = props;
+
+  const [autoBuyLoading, setAutoBuyLoading] = useState(false);
+  const [autoBuyMessage, setAutoBuyMessage] = useState("");
+  const [autoBuyRules, setAutoBuyRules] = useState([]);
+  const [editingAutoBuyRuleId, setEditingAutoBuyRuleId] = useState(null);
+  const [autoBuyForm, setAutoBuyForm] = useState({
+    name: "",
+    code: tradeCode || "005930",
+    quantity: "1",
+    frequency: "DAILY",
+    enabled: true,
+    startDate: "",
+    endDate: "",
+  });
+
+  const autoBuyPreviewName = useMemo(() => {
+    const code = String(autoBuyForm.code || "").trim();
+    const qty = Number(autoBuyForm.quantity || 0) || 0;
+    return `${getStockNameByCode?.(code) || code || "-"} ${qty}주 자동매수`;
+  }, [autoBuyForm.code, autoBuyForm.quantity, getStockNameByCode]);
+
+  const authHeaders = () => (authToken ? { Authorization: `Bearer ${authToken}` } : {});
+
+  const loadAutoBuyRules = async () => {
+    if (!isLoggedIn || !authToken) return;
+    setAutoBuyLoading(true);
+    try {
+      const res = await axios.get(`${apiBaseUrl}/api/sim/auto-buy-rules`, { headers: authHeaders() });
+      setAutoBuyRules(Array.isArray(res.data) ? res.data : []);
+    } catch (err) {
+      setAutoBuyMessage(err?.response?.data?.message || err?.message || "자동매수 규칙 조회에 실패했습니다.");
+    } finally {
+      setAutoBuyLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isLoggedIn || !authToken) return;
+    loadAutoBuyRules();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoggedIn, authToken, apiBaseUrl]);
+
+  useEffect(() => {
+    if (!tradeCode) return;
+    setAutoBuyForm((prev) => (prev.code ? prev : { ...prev, code: tradeCode }));
+  }, [tradeCode]);
+
+  const saveAutoBuyRule = async () => {
+    try {
+      setAutoBuyMessage("");
+      const code = extractStockCode(autoBuyForm.code);
+      const payload = {
+        name: String(autoBuyForm.name || "").trim() || `${getStockNameByCode?.(code) || code} 자동매수`,
+        code,
+        quantity: Number(autoBuyForm.quantity || 0),
+        frequency: autoBuyForm.frequency,
+        enabled: Boolean(autoBuyForm.enabled),
+        startDate: autoBuyForm.startDate || null,
+        endDate: autoBuyForm.endDate || null,
+      };
+      if (editingAutoBuyRuleId) {
+        await axios.patch(`${apiBaseUrl}/api/sim/auto-buy-rules/${editingAutoBuyRuleId}`, payload, { headers: authHeaders() });
+        setAutoBuyMessage("자동매수 예약을 수정했습니다.");
+      } else {
+        await axios.post(`${apiBaseUrl}/api/sim/auto-buy-rules`, payload, { headers: authHeaders() });
+        setAutoBuyMessage("자동매수 예약을 추가했습니다.");
+      }
+      setEditingAutoBuyRuleId(null);
+      setAutoBuyForm((prev) => ({ ...prev, name: "", quantity: "1", startDate: "", endDate: "" }));
+      await loadAutoBuyRules();
+    } catch (err) {
+      setAutoBuyMessage(err?.response?.data?.message || err?.message || "자동매수 예약 저장에 실패했습니다.");
+    }
+  };
+
+  const startEditAutoBuyRule = (rule) => {
+    if (!rule) return;
+    setEditingAutoBuyRuleId(rule.id);
+    setAutoBuyForm({
+      name: rule.name || "",
+      code: rule.code || (tradeableCodes[0] || "005930"),
+      quantity: String(rule.quantity || 1),
+      frequency: rule.frequency || "DAILY",
+      enabled: Boolean(rule.enabled),
+      startDate: rule.startDate || "",
+      endDate: rule.endDate || "",
+    });
+  };
+
+  const cancelEditAutoBuyRule = () => {
+    setEditingAutoBuyRuleId(null);
+    setAutoBuyForm((prev) => ({
+      ...prev,
+      name: "",
+      code: tradeCode || prev.code || "005930",
+      quantity: "1",
+      frequency: "DAILY",
+      enabled: true,
+      startDate: "",
+      endDate: "",
+    }));
+  };
+
+  const toggleAutoBuyRule = async (rule) => {
+    try {
+      await axios.patch(
+        `${apiBaseUrl}/api/sim/auto-buy-rules/${rule.id}`,
+        {
+          name: rule.name,
+          code: rule.code,
+          quantity: rule.quantity,
+          frequency: rule.frequency,
+          enabled: !rule.enabled,
+          startDate: rule.startDate || null,
+          endDate: rule.endDate || null,
+        },
+        { headers: authHeaders() }
+      );
+      await loadAutoBuyRules();
+    } catch (err) {
+      setAutoBuyMessage(err?.response?.data?.message || err?.message || "자동매수 상태 변경에 실패했습니다.");
+    }
+  };
+
+  const deleteAutoBuyRule = async (ruleId) => {
+    try {
+      await axios.delete(`${apiBaseUrl}/api/sim/auto-buy-rules/${ruleId}`, { headers: authHeaders() });
+      setAutoBuyMessage("자동매수 예약을 삭제했습니다.");
+      await loadAutoBuyRules();
+    } catch (err) {
+      setAutoBuyMessage(err?.response?.data?.message || err?.message || "자동매수 예약 삭제에 실패했습니다.");
+    }
+  };
 
   if (!isLoggedIn) {
     return (
@@ -140,6 +275,139 @@ export default function SimulationPage(props) {
       </div>
 
       {tradeMessage && <div className="sim-trade-message">{tradeMessage}</div>}
+
+      <div className="app-card" style={{ marginTop: 12, background: "linear-gradient(180deg, #f8fafc 0%, #ffffff 100%)" }}>
+        <div className="app-toolbar-row" style={{ justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontWeight: 700 }}>자동매수 예약 (시뮬레이션)</div>
+            <div style={{ fontSize: 12, color: "#64748b" }}>
+              리플레이 날짜 진행 시 규칙 조건에 맞으면 자동으로 시장가 매수합니다.
+            </div>
+          </div>
+          <button type="button" className="sim-order-mini-btn" onClick={loadAutoBuyRules} disabled={autoBuyLoading}>
+            새로고침
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gap: 8, marginTop: 10, gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))" }}>
+          <input
+            placeholder="예약명 (선택)"
+            value={autoBuyForm.name}
+            onChange={(e) => setAutoBuyForm((p) => ({ ...p, name: e.target.value }))}
+          />
+          <select
+            value={autoBuyForm.code}
+            onChange={(e) => setAutoBuyForm((p) => ({ ...p, code: e.target.value }))}
+          >
+            {tradeableCodes.map((code) => (
+              <option key={`auto-buy-form-code-${code}`} value={code}>
+                {getStockNameByCode(code)} ({code})
+              </option>
+            ))}
+          </select>
+          <input
+            type="number"
+            min="1"
+            value={autoBuyForm.quantity}
+            onChange={(e) => setAutoBuyForm((p) => ({ ...p, quantity: e.target.value }))}
+            placeholder="수량"
+          />
+          <select value={autoBuyForm.frequency} onChange={(e) => setAutoBuyForm((p) => ({ ...p, frequency: e.target.value }))}>
+            <option value="DAILY">매일</option>
+            <option value="WEEKDAYS">주중만</option>
+            <option value="WEEKLY">주 1회</option>
+          </select>
+          <input
+            type="date"
+            value={autoBuyForm.startDate}
+            onChange={(e) => setAutoBuyForm((p) => ({ ...p, startDate: e.target.value }))}
+            placeholder="시작일"
+          />
+          <input
+            type="date"
+            value={autoBuyForm.endDate}
+            onChange={(e) => setAutoBuyForm((p) => ({ ...p, endDate: e.target.value }))}
+            placeholder="종료일"
+          />
+        </div>
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            <input
+              type="checkbox"
+              checked={Boolean(autoBuyForm.enabled)}
+              onChange={(e) => setAutoBuyForm((p) => ({ ...p, enabled: e.target.checked }))}
+            />
+            생성 즉시 활성화
+          </label>
+          <span style={{ fontSize: 12, color: "#64748b" }}>미리보기: {autoBuyPreviewName}</span>
+          <button
+            type="button"
+            onClick={saveAutoBuyRule}
+            disabled={!extractStockCode(autoBuyForm.code) || Number(autoBuyForm.quantity || 0) <= 0}
+          >
+            {editingAutoBuyRuleId ? "자동매수 예약 수정 저장" : "자동매수 예약 추가"}
+          </button>
+          {editingAutoBuyRuleId && (
+            <button type="button" className="sim-order-mini-btn" onClick={cancelEditAutoBuyRule}>
+              수정 취소
+            </button>
+          )}
+        </div>
+
+        {autoBuyMessage && <div className="sim-trade-message" style={{ marginTop: 8 }}>{autoBuyMessage}</div>}
+
+        <div style={{ marginTop: 10 }}>
+          {autoBuyLoading && <div>자동매수 규칙 불러오는 중...</div>}
+          {!autoBuyLoading && autoBuyRules.length === 0 && (
+            <div style={{ color: "#64748b" }}>등록된 자동매수 예약이 없습니다.</div>
+          )}
+          {!autoBuyLoading && autoBuyRules.length > 0 && (
+            <TableWrap>
+              <table className="sim-order-table">
+                <thead>
+                  <tr>
+                    <th>상태</th>
+                    <th>예약명</th>
+                    <th>종목</th>
+                    <th className="num">수량</th>
+                    <th>주기</th>
+                    <th>기간</th>
+                    <th>최근 실행</th>
+                    <th>액션</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {autoBuyRules.map((r) => (
+                    <tr key={`auto-buy-rule-${r.id}`}>
+                      <td>{r.enabled ? "활성" : "비활성"}</td>
+                      <td>{r.name}</td>
+                      <td>{getStockNameByCode(r.code)} ({r.code})</td>
+                      <td className="num">{fmt(Number(r.quantity || 0))}주</td>
+                      <td>{frequencyLabel(r.frequency)}</td>
+                      <td>{r.startDate || "-"} ~ {r.endDate || "-"}</td>
+                      <td>{r.lastExecutedDate || "-"}</td>
+                      <td>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          <button type="button" className="sim-order-mini-btn" onClick={() => toggleAutoBuyRule(r)}>
+                            {r.enabled ? "비활성화" : "활성화"}
+                          </button>
+                          <button type="button" className="sim-order-mini-btn" onClick={() => startEditAutoBuyRule(r)}>
+                            수정
+                          </button>
+                          <button type="button" className="sim-order-mini-btn" onClick={() => deleteAutoBuyRule(r.id)}>
+                            삭제
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableWrap>
+          )}
+        </div>
+      </div>
 
       {tradeCode && (
         <div className="sim-selected-stock-card sim-selected-stock-card-gap">
@@ -482,4 +750,24 @@ export default function SimulationPage(props) {
 
 function TableWrap({ children }) {
   return <div className="sim-order-table-wrap">{children}</div>;
+}
+
+function extractStockCode(input) {
+  const text = String(input || "").trim();
+  if (!text) return "";
+  const m = text.match(/\b(\d{6})\b/);
+  return m ? m[1] : text;
+}
+
+function frequencyLabel(value) {
+  switch (String(value || "").toUpperCase()) {
+    case "DAILY":
+      return "매일";
+    case "WEEKDAYS":
+      return "주중";
+    case "WEEKLY":
+      return "주 1회";
+    default:
+      return value || "-";
+  }
 }

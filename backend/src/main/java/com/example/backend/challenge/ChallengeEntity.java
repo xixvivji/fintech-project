@@ -17,6 +17,7 @@ public class ChallengeEntity {
     @Column private Integer habitDailyBuyQuantity;
     @Column private Integer habitRequiredDays;
     @Column(nullable = false, length = 20) private String visibility;
+    @Column(length = 100) private String privatePassword;
     @Column(nullable = false) private int maxParticipants;
     @Column(nullable = false, length = 10) private String startDate;
     @Column(nullable = false, length = 10) private String endDate;
@@ -49,4 +50,6 @@ public class ChallengeEntity {
     public void setHabitDailyBuyQuantity(Integer habitDailyBuyQuantity) { this.habitDailyBuyQuantity = habitDailyBuyQuantity; }
     public Integer getHabitRequiredDays() { return habitRequiredDays; }
     public void setHabitRequiredDays(Integer habitRequiredDays) { this.habitRequiredDays = habitRequiredDays; }
+    public String getPrivatePassword() { return privatePassword; }
+    public void setPrivatePassword(String privatePassword) { this.privatePassword = privatePassword; }
 }

@@ -6,4 +6,5 @@ import java.util.List;
 
 public interface FeedCommentRepository extends JpaRepository<FeedCommentEntity, Long> {
     List<FeedCommentEntity> findByPostIdAndDeletedYnFalseOrderByCreatedAtAsc(Long postId);
+    void deleteByPostId(Long postId);
 }

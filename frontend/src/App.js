@@ -718,6 +718,8 @@ export default function App() {
             isLoggedIn={isLoggedIn}
             currentUser={currentUser}
             leagueState={leagueState}
+            tradeableCodes={tradeableCodes}
+            getStockNameByCode={getStockNameByCode}
             fmt={fmt}
             fmtDateTime={fmtDateTime}
             navigateTo={navigateTo}
@@ -788,6 +790,7 @@ export default function App() {
         {path === "/sim" && (
           <SimulationPage
             apiBaseUrl={API_BASE_URL}
+            authToken={authToken}
             isLoggedIn={isLoggedIn}
             replayLoading={replayLoading}
             simLoading={simLoading}

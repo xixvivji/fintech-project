@@ -6,6 +6,7 @@ public class ChallengeCreateRequestDto {
     private String goalType;
     private Double targetValue;
     private String visibility;
+    private String privatePassword;
     private Integer maxParticipants;
     private String startDate;
     private String endDate;
@@ -22,6 +23,8 @@ public class ChallengeCreateRequestDto {
     public void setTargetValue(Double targetValue) { this.targetValue = targetValue; }
     public String getVisibility() { return visibility; }
     public void setVisibility(String visibility) { this.visibility = visibility; }
+    public String getPrivatePassword() { return privatePassword; }
+    public void setPrivatePassword(String privatePassword) { this.privatePassword = privatePassword; }
     public Integer getMaxParticipants() { return maxParticipants; }
     public void setMaxParticipants(Integer maxParticipants) { this.maxParticipants = maxParticipants; }
     public String getStartDate() { return startDate; }

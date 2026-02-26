@@ -13,6 +13,7 @@ const DEFAULT_FORM = () => {
     goalType: "RETURN_RATE",
     targetValue: "5",
     visibility: "PUBLIC",
+    privatePassword: "",
     maxParticipants: "100",
     startDate: toLocalDate(today),
     endDate: toLocalDate(addDate(today, 30)),
@@ -28,6 +29,8 @@ export default function ChallengesPage({
   isLoggedIn,
   currentUser,
   leagueState,
+  tradeableCodes = [],
+  getStockNameByCode,
   navigateTo,
 }) {
   const [loading, setLoading] = useState(false);
@@ -38,15 +41,21 @@ export default function ChallengesPage({
   const [creating, setCreating] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState("");
   const [createForm, setCreateForm] = useState(DEFAULT_FORM);
+  const baseLeagueDate = String(leagueState?.currentDate || "").trim();
 
   useEffect(() => {
-    const base = String(leagueState?.currentDate || "").trim();
+    const base = baseLeagueDate;
     if (!base) return;
     setCreateForm((prev) => {
-      if ((prev.title || "").trim() || (prev.description || "").trim()) return prev;
-      return { ...prev, startDate: base, endDate: addDaysString(base, 30) };
+      const shouldSnap =
+        !prev.startDate ||
+        (!((prev.title || "").trim()) && !((prev.description || "").trim())) ||
+        prev.startDate !== base;
+      if (!shouldSnap) return prev;
+      const nextEnd = prev.endDate && prev.endDate >= base ? prev.endDate : addDaysString(base, 30);
+      return { ...prev, startDate: base, endDate: nextEnd };
     });
-  }, [leagueState]);
+  }, [baseLeagueDate]);
 
   const load = async () => {
     if (!isLoggedIn || !authToken) return;
@@ -100,6 +109,7 @@ export default function ChallengesPage({
         goalType: createForm.goalType,
         targetValue: Number(createForm.targetValue || 0),
         visibility: createForm.visibility,
+        privatePassword: createForm.visibility === "PRIVATE" ? String(createForm.privatePassword || "") : null,
         maxParticipants: Number(createForm.maxParticipants || 0),
         startDate: createForm.startDate,
         endDate: createForm.endDate,
@@ -133,6 +143,7 @@ export default function ChallengesPage({
         goalType: "RETURN_RATE",
         targetValue: "3",
         visibility: "PUBLIC",
+        privatePassword: "",
         maxParticipants: "200",
         startDate: base || p.startDate,
         endDate: base ? addDaysString(base, 30) : p.endDate,
@@ -151,6 +162,7 @@ export default function ChallengesPage({
         habitDailyBuyQuantity: "1",
         habitRequiredDays: "20",
         visibility: "PUBLIC",
+        privatePassword: "",
         maxParticipants: "100",
         startDate: base || p.startDate,
         endDate: base ? addDaysString(base, 30) : p.endDate,
@@ -166,11 +178,22 @@ export default function ChallengesPage({
         goalType: "RETURN_RATE",
         targetValue: "8",
         visibility: "PUBLIC",
+        privatePassword: "",
         maxParticipants: "50",
         startDate: base || p.startDate,
         endDate: base ? addDaysString(base, 21) : p.endDate,
       }));
     }
+  };
+
+  const openChallengeDetail = (challenge) => {
+    if (!challenge?.id) return;
+    if (String(challenge.visibility || "").toUpperCase() === "PRIVATE") {
+      const pw = window.prompt("비공개 챌린지 비밀번호를 입력하세요.");
+      if (!pw || !String(pw).trim()) return;
+      writeChallengePassword(challenge.id, pw);
+    }
+    navigateTo?.(`/challenges/${challenge.id}`);
   };
 
   if (!isLoggedIn) {
@@ -273,14 +296,6 @@ export default function ChallengesPage({
                 <option value="DAILY_BUY_QUANTITY">습관형 (1일 N주 매수)</option>
               </select>
 
-              <select
-                value={createForm.visibility}
-                onChange={(e) => setCreateForm((p) => ({ ...p, visibility: e.target.value }))}
-              >
-                <option value="PUBLIC">공개</option>
-                <option value="PRIVATE">비공개</option>
-              </select>
-
               <input
                 type="number"
                 min="1"
@@ -289,17 +304,52 @@ export default function ChallengesPage({
                 placeholder="최대 참여자 수"
               />
 
+              {createForm.goalType === "DAILY_BUY_QUANTITY" && (
+                <input
+                  type="number"
+                  min="1"
+                  value={createForm.habitRequiredDays}
+                  onChange={(e) => setCreateForm((p) => ({ ...p, habitRequiredDays: e.target.value }))}
+                  placeholder="목표 달성일수"
+                />
+              )}
+
               <input
                 type="date"
+                min={baseLeagueDate || undefined}
                 value={createForm.startDate}
-                onChange={(e) => setCreateForm((p) => ({ ...p, startDate: e.target.value }))}
+                onChange={(e) =>
+                  setCreateForm((p) => {
+                    const startDate = e.target.value;
+                    const endDate = p.endDate && p.endDate < startDate ? startDate : p.endDate;
+                    return { ...p, startDate, endDate };
+                  })
+                }
               />
 
               <input
                 type="date"
+                min={createForm.startDate || baseLeagueDate || undefined}
                 value={createForm.endDate}
                 onChange={(e) => setCreateForm((p) => ({ ...p, endDate: e.target.value }))}
               />
+
+              <select
+                value={createForm.visibility}
+                onChange={(e) => setCreateForm((p) => ({ ...p, visibility: e.target.value }))}
+              >
+                <option value="PUBLIC">공개</option>
+                <option value="PRIVATE">비공개</option>
+              </select>
+
+              {createForm.visibility === "PRIVATE" && (
+                <input
+                  type="password"
+                  value={createForm.privatePassword || ""}
+                  onChange={(e) => setCreateForm((p) => ({ ...p, privatePassword: e.target.value }))}
+                  placeholder="비공개 비밀번호 (4~50자)"
+                />
+              )}
 
               {createForm.goalType === "RETURN_RATE" ? (
                 <input
@@ -311,30 +361,40 @@ export default function ChallengesPage({
                 />
               ) : (
                 <>
-                  <input
+                  <select
                     value={createForm.habitCode}
                     onChange={(e) => setCreateForm((p) => ({ ...p, habitCode: e.target.value }))}
-                    placeholder="종목코드 (예: 005930)"
-                  />
+                    title="종목 선택"
+                  >
+                    {tradeableCodes.map((code) => (
+                      <option key={`habit-select-${code}`} value={code}>
+                        {(getStockNameByCode?.(code) || code)} ({code})
+                      </option>
+                    ))}
+                  </select>
                   <input
                     type="number"
                     min="1"
                     value={createForm.habitDailyBuyQuantity}
                     onChange={(e) => setCreateForm((p) => ({ ...p, habitDailyBuyQuantity: e.target.value }))}
-                    placeholder="하루 매수 수량"
-                  />
-                  <input
-                    type="number"
-                    min="1"
-                    value={createForm.habitRequiredDays}
-                    onChange={(e) => setCreateForm((p) => ({ ...p, habitRequiredDays: e.target.value }))}
-                    placeholder="달성 필요 일수"
+                    placeholder="하루 매수 수량(주)"
                   />
                 </>
               )}
             </div>
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <button
+                type="button"
+                className="home-link-btn"
+                onClick={() => {
+                  const base = String(baseLeagueDate || createForm.startDate || "").trim();
+                  if (!base) return;
+                  setCreateForm((p) => ({ ...p, startDate: base, endDate: p.endDate && p.endDate >= base ? p.endDate : addDaysString(base, 30) }));
+                }}
+              >
+                상태 기준일로 시작일 맞추기
+              </button>
               <button
                 type="button"
                 className="home-link-btn"
@@ -361,6 +421,9 @@ export default function ChallengesPage({
               <button type="button" onClick={onCreate}>
                 생성하고 상세 보기
               </button>
+            </div>
+            <div style={{ fontSize: 12, color: "#64748b" }}>
+              생성 기준일: <strong>{baseLeagueDate || "-"}</strong> (리그 현재일 이전 날짜는 선택할 수 없게 제한됩니다)
             </div>
           </div>
         )}
@@ -447,7 +510,7 @@ export default function ChallengesPage({
                     </div>
                   </div>
 
-                  <button type="button" onClick={() => navigateTo?.(`/challenges/${c.id}`)}>
+                  <button type="button" onClick={() => openChallengeDetail(c)}>
                     상세 보기
                   </button>
                 </div>
@@ -568,5 +631,18 @@ function addDaysString(yyyyMmDd, days) {
     return toLocalDate(d);
   } catch {
     return yyyyMmDd;
+  }
+}
+
+function challengePasswordKey(challengeId) {
+  return `challenge_pw_${challengeId}`;
+}
+
+function writeChallengePassword(challengeId, password) {
+  try {
+    const value = String(password || "").trim();
+    if (!value) return;
+    sessionStorage.setItem(challengePasswordKey(challengeId), value);
+  } catch {
   }
 }
