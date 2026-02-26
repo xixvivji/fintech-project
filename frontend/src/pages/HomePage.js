@@ -4,7 +4,7 @@ import axios from "axios";
 const HOME_LAYOUT_KEY = "fintech_home_layout_v2";
 const AUTH_TOKEN_KEY = "fintech_access_token";
 const INITIAL_CASH = 50000000;
-const DEFAULT_WIDGET_ORDER = ["metrics", "movers", "volume", "watchlist", "ranking"];
+const DEFAULT_WIDGET_ORDER = ["metrics", "challenges", "movers", "volume", "watchlist", "ranking"];
 
 function readHomeLayout() {
   try {
@@ -76,6 +76,9 @@ export default function HomePage({
   const [popularLoading, setPopularLoading] = useState(false);
   const [popularError, setPopularError] = useState("");
   const [popularRows, setPopularRows] = useState([]);
+  const [challengeRows, setChallengeRows] = useState([]);
+  const [challengeLoading, setChallengeLoading] = useState(false);
+  const [challengeError, setChallengeError] = useState("");
 
   useEffect(() => {
     const saved = readHomeLayout();
@@ -163,6 +166,37 @@ export default function HomePage({
     };
   }, [apiBaseUrl, isLoggedIn]);
 
+  useEffect(() => {
+    let cancelled = false;
+    async function loadChallenges() {
+      if (!apiBaseUrl || !isLoggedIn) {
+        if (!cancelled) setChallengeRows([]);
+        return;
+      }
+      setChallengeLoading(true);
+      setChallengeError("");
+      try {
+        const token = readAccessToken();
+        const res = await axios.get(`${apiBaseUrl}/api/challenges`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!cancelled) {
+          setChallengeRows(Array.isArray(res.data) ? res.data.slice(0, 3) : []);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setChallengeError(err?.response?.data?.message || "챌린지 목록을 불러오지 못했습니다.");
+        }
+      } finally {
+        if (!cancelled) setChallengeLoading(false);
+      }
+    }
+    loadChallenges();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBaseUrl, isLoggedIn]);
+
   const top3 = useMemo(() => (rankings || []).slice(0, 3), [rankings]);
   const upMovers = useMemo(() => moversPayload.gainers || [], [moversPayload]);
   const downMovers = useMemo(() => moversPayload.losers || [], [moversPayload]);
@@ -239,6 +273,43 @@ export default function HomePage({
             navigateTo("/market");
           }}
         />
+      ),
+    },
+    challenges: {
+      icon: "🎯",
+      title: "목표 챌린지",
+      span: "wide",
+      sparkline: challengeRows.map((r) => Number(r.targetValue || 0)),
+      body: (
+        <>
+          {!isLoggedIn && <div className="home-empty">로그인 후 목표 달성 챌린지에 참여할 수 있습니다.</div>}
+          {isLoggedIn && challengeLoading && <div className="home-empty">챌린지를 불러오는 중...</div>}
+          {isLoggedIn && !challengeLoading && challengeError && <div className="home-empty">{challengeError}</div>}
+          {isLoggedIn && !challengeLoading && !challengeError && challengeRows.length === 0 && (
+            <div className="home-empty">아직 공개 챌린지가 없습니다.</div>
+          )}
+          {isLoggedIn && challengeRows.length > 0 && (
+            <div className="home-ranking">
+              {challengeRows.map((c) => (
+                <button
+                  key={`home-challenge-${c.id}`}
+                  type="button"
+                  className="home-ranking-row"
+                  onClick={() => navigateTo(`/challenges/${c.id}`)}
+                >
+                  <div className="home-rank-no">#{c.id}</div>
+                  <div className="home-rank-name">{c.title}</div>
+                  <div className={`home-rank-rate ${String(c.status || "").toUpperCase() === "ONGOING" ? "up" : "down"}`}>
+                    목표 {Number(c.targetValue || 0).toFixed(1)}%
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="home-note">
+            <button type="button" className="home-link-btn" onClick={() => navigateTo("/challenges")}>챌린지 전체 보기</button>
+          </div>
+        </>
       ),
     },
     watchlist: {
@@ -342,6 +413,7 @@ export default function HomePage({
           <div className="home-hero-links">
             <button type="button" className="home-link-btn" onClick={() => navigateTo("/sim")}>모의투자로 이동</button>
             <button type="button" className="home-link-btn" onClick={() => navigateTo("/league")}>리그 상세 보기</button>
+            {isLoggedIn && <button type="button" className="home-link-btn" onClick={() => navigateTo("/challenges")}>챌린지 보기</button>}
           </div>
         </div>
       </section>

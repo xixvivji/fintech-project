@@ -34,6 +34,7 @@ public class SimulationService {
     private final SimReplayStateRepository simReplayStateRepository;
     private final SimPendingOrderRepository simPendingOrderRepository;
     private final SimTradeExecutionRepository simTradeExecutionRepository;
+    private final SimAutoBuyRuleRepository simAutoBuyRuleRepository;
     private final SimLeagueStateRepository simLeagueStateRepository;
     private final UserRepository userRepository;
     private final ScheduledExecutorService replayExecutor = Executors.newSingleThreadScheduledExecutor();
@@ -45,6 +46,7 @@ public class SimulationService {
             SimReplayStateRepository simReplayStateRepository,
             SimPendingOrderRepository simPendingOrderRepository,
             SimTradeExecutionRepository simTradeExecutionRepository,
+            SimAutoBuyRuleRepository simAutoBuyRuleRepository,
             SimLeagueStateRepository simLeagueStateRepository,
             UserRepository userRepository
     ) {
@@ -54,6 +56,7 @@ public class SimulationService {
         this.simReplayStateRepository = simReplayStateRepository;
         this.simPendingOrderRepository = simPendingOrderRepository;
         this.simTradeExecutionRepository = simTradeExecutionRepository;
+        this.simAutoBuyRuleRepository = simAutoBuyRuleRepository;
         this.simLeagueStateRepository = simLeagueStateRepository;
         this.userRepository = userRepository;
     }
@@ -289,6 +292,62 @@ public class SimulationService {
     }
 
     @Transactional
+    public synchronized List<SimAutoBuyRuleDto> getAutoBuyRules(Long userId) {
+        validateUserId(userId);
+        return simAutoBuyRuleRepository.findByUserIdOrderByCreatedAtDesc(userId).stream()
+                .map(this::toAutoBuyRuleDto)
+                .toList();
+    }
+
+    @Transactional
+    public synchronized SimAutoBuyRuleDto createAutoBuyRule(Long userId, SimAutoBuyRuleRequestDto request) {
+        validateUserId(userId);
+        if (request == null) throw new IllegalArgumentException("Auto buy rule request is empty.");
+        SimAutoBuyRuleEntity row = new SimAutoBuyRuleEntity();
+        row.setUserId(userId);
+        row.setName(normalizeAutoRuleName(request.getName()));
+        row.setCode(normalizeCode(request.getCode()));
+        int qty = request.getQuantity() == null ? 1 : request.getQuantity();
+        if (qty <= 0) throw new IllegalArgumentException("quantity must be at least 1.");
+        row.setQuantity(qty);
+        row.setFrequency(normalizeAutoRuleFrequency(request.getFrequency()));
+        row.setEnabled(request.getEnabled() == null || request.getEnabled());
+        row.setStartDate(normalizeOptionalDate(request.getStartDate()));
+        row.setEndDate(normalizeOptionalDate(request.getEndDate()));
+        row.setLastExecutedDate(null);
+        row.setLastExecutedAt(0L);
+        row.setCreatedAt(System.currentTimeMillis());
+        return toAutoBuyRuleDto(simAutoBuyRuleRepository.save(row));
+    }
+
+    @Transactional
+    public synchronized SimAutoBuyRuleDto updateAutoBuyRule(Long userId, Long ruleId, SimAutoBuyRuleRequestDto request) {
+        validateUserId(userId);
+        if (request == null) throw new IllegalArgumentException("Auto buy rule request is empty.");
+        SimAutoBuyRuleEntity row = simAutoBuyRuleRepository.findByIdAndUserId(ruleId, userId)
+                .orElseThrow(() -> new IllegalArgumentException("Auto buy rule not found."));
+        if (request.getName() != null) row.setName(normalizeAutoRuleName(request.getName()));
+        if (request.getCode() != null) row.setCode(normalizeCode(request.getCode()));
+        if (request.getQuantity() != null) {
+            if (request.getQuantity() <= 0) throw new IllegalArgumentException("quantity must be at least 1.");
+            row.setQuantity(request.getQuantity());
+        }
+        if (request.getFrequency() != null) row.setFrequency(normalizeAutoRuleFrequency(request.getFrequency()));
+        if (request.getEnabled() != null) row.setEnabled(request.getEnabled());
+        if (request.getStartDate() != null) row.setStartDate(normalizeOptionalDate(request.getStartDate()));
+        if (request.getEndDate() != null) row.setEndDate(normalizeOptionalDate(request.getEndDate()));
+        return toAutoBuyRuleDto(simAutoBuyRuleRepository.save(row));
+    }
+
+    @Transactional
+    public synchronized void deleteAutoBuyRule(Long userId, Long ruleId) {
+        validateUserId(userId);
+        SimAutoBuyRuleEntity row = simAutoBuyRuleRepository.findByIdAndUserId(ruleId, userId)
+                .orElseThrow(() -> new IllegalArgumentException("Auto buy rule not found."));
+        simAutoBuyRuleRepository.delete(row);
+    }
+
+    @Transactional
     public synchronized List<SimRankingDto> getRankings(Long currentUserId) {
         validateUserId(currentUserId);
         List<UserEntity> users = userRepository.findAll();
@@ -437,6 +496,7 @@ public class SimulationService {
         simLeagueStateRepository.save(leagueState);
 
         syncUserReplayDates(next);
+        processAutoBuyRulesForAllUsers(next);
         processPendingOrdersForAllUsers(next);
     }
 
@@ -477,6 +537,45 @@ public class SimulationService {
         }
         for (Long userId : userIds) {
             processPendingOrders(userId, valuationDate);
+        }
+    }
+
+    private void processAutoBuyRulesForAllUsers(LocalDate valuationDate) {
+        List<SimAutoBuyRuleEntity> rules = simAutoBuyRuleRepository.findByEnabledTrue();
+        if (rules.isEmpty()) return;
+        for (SimAutoBuyRuleEntity rule : rules) {
+            try {
+                processAutoBuyRule(rule, valuationDate);
+            } catch (Exception ignored) {
+                // Draft scheduler: skip failures and continue processing other rules.
+            }
+        }
+    }
+
+    private void processAutoBuyRule(SimAutoBuyRuleEntity rule, LocalDate valuationDate) {
+        if (rule == null || rule.getUserId() == null || valuationDate == null) return;
+        String vd = valuationDate.toString();
+        if (vd.equals(rule.getLastExecutedDate())) return;
+        if (rule.getStartDate() != null && !rule.getStartDate().isBlank() && valuationDate.isBefore(LocalDate.parse(rule.getStartDate()))) return;
+        if (rule.getEndDate() != null && !rule.getEndDate().isBlank() && valuationDate.isAfter(LocalDate.parse(rule.getEndDate()))) return;
+        if (!autoRuleRunsOn(rule.getFrequency(), valuationDate)) return;
+
+        SimAccountEntity account = getOrCreateAccount(rule.getUserId());
+        double price;
+        try {
+            price = stockService.getClosePriceOnOrBefore(rule.getCode(), valuationDate);
+        } catch (Exception e) {
+            return;
+        }
+        try {
+            executeTrade(rule.getUserId(), account, rule.getCode(), "BUY", rule.getQuantity(), price);
+            simAccountRepository.save(account);
+            recordExecution(rule.getUserId(), rule.getCode(), "BUY", "MARKET", null, rule.getQuantity(), price, valuationDate);
+            rule.setLastExecutedDate(vd);
+            rule.setLastExecutedAt(System.currentTimeMillis());
+            simAutoBuyRuleRepository.save(rule);
+        } catch (IllegalArgumentException ignored) {
+            // Insufficient cash or invalid condition: skip this date.
         }
     }
 
@@ -555,6 +654,38 @@ public class SimulationService {
             throw new IllegalArgumentException("지정가 주문은 limitPrice가 필요합니다.");
         }
         return round2(limitPrice);
+    }
+
+    private String normalizeAutoRuleName(String name) {
+        if (name == null || name.isBlank()) throw new IllegalArgumentException("Rule name is required.");
+        String n = name.trim();
+        if (n.length() > 100) throw new IllegalArgumentException("Rule name is too long.");
+        return n;
+    }
+
+    private String normalizeAutoRuleFrequency(String frequency) {
+        String f = frequency == null ? "DAILY" : frequency.trim().toUpperCase();
+        if (!"DAILY".equals(f) && !"WEEKDAY".equals(f)) {
+            throw new IllegalArgumentException("frequency must be DAILY or WEEKDAY.");
+        }
+        return f;
+    }
+
+    private boolean autoRuleRunsOn(String frequency, LocalDate valuationDate) {
+        String f = normalizeAutoRuleFrequency(frequency);
+        if ("DAILY".equals(f)) return true;
+        return valuationDate.getDayOfWeek().getValue() <= 5;
+    }
+
+    private String normalizeOptionalDate(String value) {
+        if (value == null) return null;
+        String v = value.trim();
+        if (v.isBlank()) return null;
+        try {
+            return LocalDate.parse(v).toString();
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Date must be yyyy-MM-dd.");
+        }
     }
 
     private boolean isLimitExecutable(String side, double marketPrice, Double limitPrice) {
@@ -676,6 +807,22 @@ public class SimulationService {
         row.setValuationDate(valuationDate == null ? null : valuationDate.toString());
         row.setExecutedAt(System.currentTimeMillis());
         simTradeExecutionRepository.save(row);
+    }
+
+    private SimAutoBuyRuleDto toAutoBuyRuleDto(SimAutoBuyRuleEntity row) {
+        return new SimAutoBuyRuleDto(
+                row.getId(),
+                row.getName(),
+                row.getCode(),
+                row.getQuantity(),
+                row.getFrequency(),
+                row.isEnabled(),
+                row.getStartDate(),
+                row.getEndDate(),
+                row.getLastExecutedDate(),
+                row.getLastExecutedAt(),
+                row.getCreatedAt()
+        );
     }
 
     private static class PopularStockAggregate {

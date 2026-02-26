@@ -8,6 +8,11 @@ import HomePage from "./pages/HomePage";
 import LeaguePage from "./pages/LeaguePage";
 import MarketPage from "./pages/MarketPage";
 import NewsPage from "./pages/NewsPage";
+import ChallengesPage from "./pages/ChallengesPage";
+import ChallengeDetailPage from "./pages/ChallengeDetailPage";
+import ChallengeHistoryPage from "./pages/ChallengeHistoryPage";
+import NotificationsPage from "./pages/NotificationsPage";
+import ProfilePage from "./pages/ProfilePage";
 import { STOCK_OPTIONS, getStockNameByCode } from "./constants/stocks";
 
 const API_BASE_URL = "http://localhost:8080";
@@ -31,8 +36,17 @@ function normalizePath(pathname) {
     pathname === "/sim" ||
     pathname === "/league" ||
     pathname === "/market" ||
-    pathname === "/news"
+    pathname === "/news" ||
+    pathname === "/challenges" ||
+    pathname === "/notifications" ||
+    pathname === "/profile"
   ) {
+    return pathname;
+  }
+  if (/^\/challenges\/\d+$/.test(pathname)) {
+    return pathname;
+  }
+  if (pathname === "/challenges/history") {
     return pathname;
   }
   return "/";
@@ -563,6 +577,10 @@ export default function App() {
   }, []);
 
   const authPage = path === "/signup" ? "signup" : "login";
+  const challengeDetailId = useMemo(() => {
+    const m = String(path || "").match(/^\/challenges\/(\d+)$/);
+    return m ? Number(m[1]) : null;
+  }, [path]);
   const chartGridColumns = isNarrowScreen ? "1fr" : "repeat(2, minmax(0, 1fr))";
   const chartDisplayMonths = useMemo(() => {
     if (chartDisplayMode === "compact") return Math.min(120, Math.max(applied.months * 2, applied.months + 12));
@@ -584,6 +602,9 @@ export default function App() {
           <button type="button" onClick={() => navigateTo("/market")} className={path === "/market" ? "app-nav-btn active" : "app-nav-btn"}>Market</button>
           <button type="button" onClick={() => navigateTo("/news")} className={path === "/news" ? "app-nav-btn active" : "app-nav-btn"}>News</button>
           <button type="button" onClick={() => navigateTo("/league")} className={path === "/league" ? "app-nav-btn active" : "app-nav-btn"}>League</button>
+          {isLoggedIn && <button type="button" onClick={() => navigateTo("/challenges")} className={path === "/challenges" ? "app-nav-btn active" : "app-nav-btn"}>Challenges</button>}
+          {isLoggedIn && <button type="button" onClick={() => navigateTo("/notifications")} className={path === "/notifications" ? "app-nav-btn active" : "app-nav-btn"}>Notifications</button>}
+          {isLoggedIn && <button type="button" onClick={() => navigateTo("/profile")} className={path === "/profile" ? "app-nav-btn active" : "app-nav-btn"}>Profile</button>}
           {!isLoggedIn && <button type="button" onClick={() => navigateTo("/login")} className={path === "/login" ? "app-nav-btn active" : "app-nav-btn"}>Login</button>}
           {!isLoggedIn && <button type="button" onClick={() => navigateTo("/signup")} className={path === "/signup" ? "app-nav-btn active" : "app-nav-btn"}>Sign Up</button>}
           {isLoggedIn && (
@@ -690,6 +711,63 @@ export default function App() {
           <NewsPage chartEndDate={chartEndDate} />
         )}
 
+        {path === "/challenges" && (
+          <ChallengesPage
+            apiBaseUrl={API_BASE_URL}
+            authToken={authToken}
+            isLoggedIn={isLoggedIn}
+            currentUser={currentUser}
+            leagueState={leagueState}
+            fmt={fmt}
+            fmtDateTime={fmtDateTime}
+            navigateTo={navigateTo}
+          />
+        )}
+
+        {path === "/challenges/history" && (
+          <ChallengeHistoryPage
+            apiBaseUrl={API_BASE_URL}
+            authToken={authToken}
+            isLoggedIn={isLoggedIn}
+            leagueState={leagueState}
+            fmt={fmt}
+            navigateTo={navigateTo}
+          />
+        )}
+
+        {challengeDetailId && (
+          <ChallengeDetailPage
+            apiBaseUrl={API_BASE_URL}
+            authToken={authToken}
+            isLoggedIn={isLoggedIn}
+            challengeId={challengeDetailId}
+            currentUser={currentUser}
+            leagueState={leagueState}
+            fmt={fmt}
+            fmtDateTime={fmtDateTime}
+            getStockNameByCode={getStockNameByCode}
+            navigateTo={navigateTo}
+          />
+        )}
+
+        {path === "/notifications" && (
+          <NotificationsPage
+            apiBaseUrl={API_BASE_URL}
+            authToken={authToken}
+            isLoggedIn={isLoggedIn}
+            fmtDateTime={fmtDateTime}
+            navigateTo={navigateTo}
+          />
+        )}
+
+        {path === "/profile" && (
+          <ProfilePage
+            apiBaseUrl={API_BASE_URL}
+            authToken={authToken}
+            isLoggedIn={isLoggedIn}
+          />
+        )}
+
         {path === "/league" && (
           <LeaguePage
             isLoggedIn={isLoggedIn}
@@ -703,6 +781,7 @@ export default function App() {
             rankingUserSummary={rankingUserSummary}
             setRankingUserSummary={setRankingUserSummary}
             rankingUserSummaryLoading={rankingUserSummaryLoading}
+            navigateTo={navigateTo}
           />
         )}
 

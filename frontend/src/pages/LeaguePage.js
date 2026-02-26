@@ -14,6 +14,7 @@ export default function LeaguePage({
   rankingUserSummary,
   setRankingUserSummary,
   rankingUserSummaryLoading,
+  navigateTo,
 }) {
   const [rankingQuery, setRankingQuery] = useState("");
   const [rankingPage, setRankingPage] = useState(1);
@@ -57,7 +58,10 @@ export default function LeaguePage({
     <div className="app-card league-page-card">
       <div className="league-page-header">
         <h3 className="league-page-title">리그 운영</h3>
-        <div className="league-page-badge">{leagueState?.running ? "진행 중" : "일시정지"}</div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button type="button" className="home-link-btn" onClick={() => navigateTo?.("/challenges")}>챌린지 보기</button>
+          <div className="league-page-badge">{leagueState?.running ? "진행 중" : "일시정지"}</div>
+        </div>
       </div>
 
       <div className="league-grid">
