@@ -109,6 +109,7 @@ export default function App() {
   const [rankingUserSummary, setRankingUserSummary] = useState(null);
 
   const isLoggedIn = Boolean(authToken);
+  const isLeagueAdmin = String(currentUser?.name || "").trim().toLowerCase() === "admin";
   const tradeableCodes = useMemo(() => STOCK_OPTIONS.map((s) => s.code), []);
   const viewCodeSet = useMemo(() => new Set(viewCodes), [viewCodes]);
   const watchlistCodeSet = useMemo(() => new Set(watchlistCodes), [watchlistCodes]);
@@ -302,9 +303,10 @@ export default function App() {
 
   useEffect(() => {
     if (!authToken || path !== "/sim" || !leagueState) return;
+    if (!isLeagueAdmin) return;
     if (leagueState.running) return;
     startReplay();
-  }, [authToken, path, leagueState, startReplay]);
+  }, [authToken, path, leagueState, isLeagueAdmin, startReplay]);
 
   const handleLogin = useCallback(async () => {
     if (!loginName.trim() || !loginPassword.trim()) {
@@ -792,6 +794,7 @@ export default function App() {
             apiBaseUrl={API_BASE_URL}
             authToken={authToken}
             isLoggedIn={isLoggedIn}
+            isLeagueAdmin={isLeagueAdmin}
             replayLoading={replayLoading}
             simLoading={simLoading}
             startReplay={startReplay}

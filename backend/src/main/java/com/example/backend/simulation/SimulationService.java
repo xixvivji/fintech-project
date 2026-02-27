@@ -27,6 +27,7 @@ public class SimulationService {
     private static final int REPLAY_STEP_DAYS = 1;
     private static final LocalDate DEFAULT_REPLAY_START_DATE = LocalDate.of(2020, 1, 1);
     private static final String DEFAULT_LEAGUE_CODE = "MAIN";
+    private static final String LEAGUE_ADMIN_NAME = "admin";
 
     private final StockService stockService;
     private final SimAccountRepository simAccountRepository;
@@ -185,6 +186,7 @@ public class SimulationService {
     @Transactional
     public synchronized PortfolioResponseDto startReplay(Long userId, String startDate) {
         validateUserId(userId);
+        validateAdminUser(userId);
 
         SimLeagueStateEntity leagueState = getOrCreateLeagueState();
         if (leagueState.getAnchorDate() == null || leagueState.getAnchorDate().isBlank()) {
@@ -210,6 +212,7 @@ public class SimulationService {
     @Transactional
     public synchronized PortfolioResponseDto pauseReplay(Long userId) {
         validateUserId(userId);
+        validateAdminUser(userId);
 
         SimLeagueStateEntity leagueState = getOrCreateLeagueState();
         leagueState.setRunning(false);
@@ -468,20 +471,34 @@ public class SimulationService {
     @Transactional
     public synchronized void reset(Long userId) {
         validateUserId(userId);
-        SimAccountEntity account = getOrCreateAccount(userId);
-        account.setCash(INITIAL_CASH);
-        account.setRealizedPnl(0);
-        simAccountRepository.save(account);
+        validateAdminUser(userId);
 
-        simPositionRepository.deleteByUserId(userId);
-        simPendingOrderRepository.deleteByUserId(userId);
-        simTradeExecutionRepository.deleteByUserId(userId);
+        List<UserEntity> users = userRepository.findAll();
+        for (UserEntity user : users) {
+            Long targetUserId = user.getId();
+            if (targetUserId == null) continue;
 
-        SimReplayStateEntity replayState = getOrCreateReplayState(userId);
-        replayState.setReplayDate(null);
-        replayState.setAnchorDate(null);
-        replayState.setRunning(false);
-        simReplayStateRepository.save(replayState);
+            SimAccountEntity account = getOrCreateAccount(targetUserId);
+            account.setCash(INITIAL_CASH);
+            account.setRealizedPnl(0);
+            simAccountRepository.save(account);
+
+            simPositionRepository.deleteByUserId(targetUserId);
+            simPendingOrderRepository.deleteByUserId(targetUserId);
+            simTradeExecutionRepository.deleteByUserId(targetUserId);
+
+            SimReplayStateEntity replayState = getOrCreateReplayState(targetUserId);
+            replayState.setReplayDate(null);
+            replayState.setAnchorDate(null);
+            replayState.setRunning(false);
+            simReplayStateRepository.save(replayState);
+        }
+
+        SimLeagueStateEntity leagueState = getOrCreateLeagueState();
+        leagueState.setAnchorDate(null);
+        leagueState.setCurrentDate(null);
+        leagueState.setRunning(false);
+        simLeagueStateRepository.save(leagueState);
     }
 
     @Transactional
@@ -614,6 +631,15 @@ public class SimulationService {
     private void validateUserId(Long userId) {
         if (userId == null || userId <= 0) {
             throw new IllegalArgumentException("유효한 사용자 정보가 필요합니다.");
+        }
+    }
+
+    private void validateAdminUser(Long userId) {
+        UserEntity user = userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("User not found."));
+        String name = user.getName() == null ? "" : user.getName().trim();
+        if (!LEAGUE_ADMIN_NAME.equalsIgnoreCase(name)) {
+            throw new IllegalArgumentException("Only admin can control the league.");
         }
     }
 

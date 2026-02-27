@@ -7,6 +7,7 @@ export default function SimulationPage(props) {
     apiBaseUrl,
     authToken,
     isLoggedIn,
+    isLeagueAdmin,
     replayLoading,
     simLoading,
     startReplay,
@@ -214,6 +215,7 @@ export default function SimulationPage(props) {
     <div className="app-card sim-page-card sim-page-wrap">
       <h3 className="sim-page-title">모의투자</h3>
 
+      {isLeagueAdmin && (
       <div className="app-toolbar-row sim-inline-row">
         <span className="sim-page-subtle">공용 리그 기준으로 자동 진행됩니다.</span>
         <button type="button" onClick={startReplay} disabled={replayLoading || simLoading}>
@@ -226,6 +228,7 @@ export default function SimulationPage(props) {
           초기화
         </button>
       </div>
+      )}
 
       <div className="app-toolbar-row sim-inline-row sim-inline-row-gap-sm">
         <span>리그 상태: {running ? "진행 중" : "정지"}</span>
