@@ -167,6 +167,26 @@
 docker compose up -d
 ```
 
+## DB Backup / Restore (for new laptop)
+
+### 1) Export on old laptop
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\export-db.ps1
+```
+
+- Output file example: `.\backups\fintech-20260227-103000.dump`
+
+### 2) Restore on new laptop
+```powershell
+docker compose up -d
+powershell -ExecutionPolicy Bypass -File .\scripts\import-db.ps1 -InputPath .\backups\fintech-20260227-103000.dump
+```
+
+### Optional params
+```powershell
+-ContainerName fintech-postgres -DbName fintech -DbUser fintech
+```
+
 ### 2) 백엔드 실행
 ```powershell
 cd backend
