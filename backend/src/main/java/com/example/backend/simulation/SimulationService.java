@@ -2,9 +2,12 @@ package com.example.backend.simulation;
 
 import com.example.backend.auth.UserEntity;
 import com.example.backend.auth.UserRepository;
+import com.example.backend.simulation.time.TimeEngine;
+import com.example.backend.simulation.time.TimeEngineProvider;
 import com.example.backend.stock.StockService;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,15 +22,17 @@ import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.UUID;
 
 @Service
 public class SimulationService {
     private static final double INITIAL_CASH = 50_000_000;
-    private static final int REPLAY_TICK_SECONDS = 60;
-    private static final int REPLAY_STEP_DAYS = 1;
     private static final LocalDate DEFAULT_REPLAY_START_DATE = LocalDate.of(2020, 1, 1);
     private static final String DEFAULT_LEAGUE_CODE = "MAIN";
     private static final String LEAGUE_ADMIN_NAME = "admin";
+    private static final String ORDER_STATUS_RECEIVED = "RECEIVED";
+    private static final String ORDER_STATUS_PROCESSED = "PROCESSED";
+    private static final String ORDER_STATUS_FAILED = "FAILED";
 
     private final StockService stockService;
     private final SimAccountRepository simAccountRepository;
@@ -37,8 +42,12 @@ public class SimulationService {
     private final SimTradeExecutionRepository simTradeExecutionRepository;
     private final SimAutoBuyRuleRepository simAutoBuyRuleRepository;
     private final SimLeagueStateRepository simLeagueStateRepository;
+    private final SimOrderEventRepository simOrderEventRepository;
+    private final TimeEngineProvider timeEngineProvider;
+    private final SimOrderQueueProperties orderQueueProperties;
     private final UserRepository userRepository;
     private final ScheduledExecutorService replayExecutor = Executors.newSingleThreadScheduledExecutor();
+    private final ScheduledExecutorService orderQueueExecutor = Executors.newSingleThreadScheduledExecutor();
 
     public SimulationService(
             StockService stockService,
@@ -49,6 +58,9 @@ public class SimulationService {
             SimTradeExecutionRepository simTradeExecutionRepository,
             SimAutoBuyRuleRepository simAutoBuyRuleRepository,
             SimLeagueStateRepository simLeagueStateRepository,
+            SimOrderEventRepository simOrderEventRepository,
+            TimeEngineProvider timeEngineProvider,
+            SimOrderQueueProperties orderQueueProperties,
             UserRepository userRepository
     ) {
         this.stockService = stockService;
@@ -59,17 +71,26 @@ public class SimulationService {
         this.simTradeExecutionRepository = simTradeExecutionRepository;
         this.simAutoBuyRuleRepository = simAutoBuyRuleRepository;
         this.simLeagueStateRepository = simLeagueStateRepository;
+        this.simOrderEventRepository = simOrderEventRepository;
+        this.timeEngineProvider = timeEngineProvider;
+        this.orderQueueProperties = orderQueueProperties;
         this.userRepository = userRepository;
     }
 
     @PostConstruct
     public void startReplayTicker() {
-        replayExecutor.scheduleAtFixedRate(this::advanceReplayIfRunning, REPLAY_TICK_SECONDS, REPLAY_TICK_SECONDS, TimeUnit.SECONDS);
+        TimeEngine engine = timeEngineProvider.get();
+        int tickSeconds = engine.tickSeconds();
+        replayExecutor.scheduleAtFixedRate(this::advanceReplayIfRunning, tickSeconds, tickSeconds, TimeUnit.SECONDS);
+
+        int pollMillis = Math.max(200, orderQueueProperties.getPollMillis());
+        orderQueueExecutor.scheduleAtFixedRate(this::processOrderQueueIfEnabled, pollMillis, pollMillis, TimeUnit.MILLISECONDS);
     }
 
     @PreDestroy
     public void shutdownReplayTicker() {
         replayExecutor.shutdownNow();
+        orderQueueExecutor.shutdownNow();
     }
 
     @Transactional
@@ -132,8 +153,24 @@ public class SimulationService {
             throw new IllegalArgumentException("Quantity must be at least 1.");
         }
 
-        SimAccountEntity account = getOrCreateAccount(userId);
         LocalDate valuationDate = resolveValuationDate(userId);
+        if (orderQueueProperties.isAsyncEnabled()) {
+            return enqueueOrder(userId, code, side, orderType, qty, limitPrice, valuationDate);
+        }
+
+        return executeOrderSynchronously(userId, code, side, orderType, qty, limitPrice, valuationDate);
+    }
+
+    private SimOrderResponseDto executeOrderSynchronously(
+            Long userId,
+            String code,
+            String side,
+            String orderType,
+            int qty,
+            Double limitPrice,
+            LocalDate valuationDate
+    ) {
+        SimAccountEntity account = getOrCreateAccount(userId);
 
         double price = stockService.getClosePriceOnOrBefore(code, valuationDate);
         if ("MARKET".equals(orderType) || isLimitExecutable(side, price, limitPrice)) {
@@ -183,14 +220,54 @@ public class SimulationService {
         );
     }
 
+    private SimOrderResponseDto enqueueOrder(
+            Long userId,
+            String code,
+            String side,
+            String orderType,
+            int qty,
+            Double limitPrice,
+            LocalDate valuationDate
+    ) {
+        String idempotencyKey = UUID.randomUUID().toString();
+        SimOrderEventEntity event = new SimOrderEventEntity();
+        event.setIdempotencyKey(idempotencyKey);
+        event.setUserId(userId);
+        event.setCode(code);
+        event.setSide(side);
+        event.setOrderType(orderType);
+        event.setLimitPrice(limitPrice);
+        event.setQuantity(qty);
+        event.setValuationDate(valuationDate.toString());
+        event.setStatus(ORDER_STATUS_RECEIVED);
+        event.setRetryCount(0);
+        event.setCreatedAt(System.currentTimeMillis());
+        simOrderEventRepository.save(event);
+
+        return new SimOrderResponseDto(
+                "ACCEPTED",
+                "주문이 접수되었습니다. 비동기 체결 대기열에서 처리됩니다.",
+                code,
+                side,
+                orderType,
+                limitPrice,
+                qty,
+                null,
+                null,
+                null,
+                event.getCreatedAt()
+        );
+    }
+
     @Transactional
     public synchronized PortfolioResponseDto startReplay(Long userId, String startDate) {
         validateUserId(userId);
         validateAdminUser(userId);
+        TimeEngine engine = timeEngineProvider.get();
 
         SimLeagueStateEntity leagueState = getOrCreateLeagueState();
         if (leagueState.getAnchorDate() == null || leagueState.getAnchorDate().isBlank()) {
-            LocalDate date = parseStartDateOrDefault(startDate);
+            LocalDate date = engine.parseAnchorDate(startDate, DEFAULT_REPLAY_START_DATE);
             leagueState.setAnchorDate(date.toString());
             leagueState.setCurrentDate(date.toString());
         } else if (leagueState.getCurrentDate() == null || leagueState.getCurrentDate().isBlank()) {
@@ -229,12 +306,13 @@ public class SimulationService {
         validateUserId(userId);
         SimLeagueStateEntity leagueState = getOrCreateLeagueState();
         PortfolioResponseDto portfolio = getPortfolio(userId);
+        TimeEngine engine = timeEngineProvider.get();
         return new ReplayStateDto(
                 portfolio.getValuationDate(),
                 leagueState.getAnchorDate(),
                 leagueState.isRunning(),
-                REPLAY_STEP_DAYS,
-                REPLAY_TICK_SECONDS,
+                engine.stepDays(),
+                engine.tickSeconds(),
                 portfolio
         );
     }
@@ -243,13 +321,14 @@ public class SimulationService {
     public synchronized SimLeagueStateDto getLeagueState(Long userId) {
         validateUserId(userId);
         SimLeagueStateEntity leagueState = getOrCreateLeagueState();
+        TimeEngine engine = timeEngineProvider.get();
         return new SimLeagueStateDto(
                 DEFAULT_LEAGUE_CODE,
                 leagueState.getAnchorDate(),
                 leagueState.getCurrentDate(),
                 leagueState.isRunning(),
-                REPLAY_STEP_DAYS,
-                REPLAY_TICK_SECONDS
+                engine.stepDays(),
+                engine.tickSeconds()
         );
     }
 
@@ -503,18 +582,70 @@ public class SimulationService {
 
     @Transactional
     protected synchronized void advanceReplayIfRunning() {
+        TimeEngine engine = timeEngineProvider.get();
         SimLeagueStateEntity leagueState = getOrCreateLeagueState();
         if (!leagueState.isRunning() || leagueState.getCurrentDate() == null || leagueState.getCurrentDate().isBlank()) {
             return;
         }
 
-        LocalDate next = LocalDate.parse(leagueState.getCurrentDate()).plusDays(REPLAY_STEP_DAYS);
+        LocalDate next = engine.nextDate(LocalDate.parse(leagueState.getCurrentDate()));
         leagueState.setCurrentDate(next.toString());
         simLeagueStateRepository.save(leagueState);
 
         syncUserReplayDates(next);
         processAutoBuyRulesForAllUsers(next);
         processPendingOrdersForAllUsers(next);
+    }
+
+    @Transactional
+    protected synchronized void processOrderQueueIfEnabled() {
+        if (!orderQueueProperties.isAsyncEnabled()) {
+            return;
+        }
+        int batchSize = Math.max(1, Math.min(orderQueueProperties.getBatchSize(), 1000));
+        List<SimOrderEventEntity> events = simOrderEventRepository.findByStatusOrderByIdAsc(
+                ORDER_STATUS_RECEIVED,
+                PageRequest.of(0, batchSize)
+        );
+        for (SimOrderEventEntity event : events) {
+            processOrderEvent(event);
+        }
+    }
+
+    private void processOrderEvent(SimOrderEventEntity event) {
+        try {
+            LocalDate valuationDate = event.getValuationDate() == null || event.getValuationDate().isBlank()
+                    ? resolveValuationDate(event.getUserId())
+                    : LocalDate.parse(event.getValuationDate());
+            executeOrderSynchronously(
+                    event.getUserId(),
+                    event.getCode(),
+                    event.getSide(),
+                    event.getOrderType(),
+                    event.getQuantity(),
+                    event.getLimitPrice(),
+                    valuationDate
+            );
+            event.setStatus(ORDER_STATUS_PROCESSED);
+            event.setProcessedAt(System.currentTimeMillis());
+            event.setErrorMessage(null);
+        } catch (Exception e) {
+            int nextRetry = event.getRetryCount() + 1;
+            event.setRetryCount(nextRetry);
+            event.setErrorMessage(trimError(e.getMessage()));
+            if (nextRetry >= Math.max(1, orderQueueProperties.getMaxRetries())) {
+                event.setStatus(ORDER_STATUS_FAILED);
+                event.setProcessedAt(System.currentTimeMillis());
+            }
+        }
+        simOrderEventRepository.save(event);
+    }
+
+    private String trimError(String message) {
+        if (message == null) return null;
+        String clean = message.trim();
+        if (clean.length() <= 500) return clean;
+        return clean.substring(0, 500);
     }
 
     private LocalDate resolveValuationDate(Long userId) {
@@ -527,7 +658,7 @@ public class SimulationService {
         if (replayState.getReplayDate() != null && !replayState.getReplayDate().isBlank()) {
             return LocalDate.parse(replayState.getReplayDate());
         }
-        return LocalDate.now();
+        return timeEngineProvider.get().defaultAnchorDate();
     }
 
     private void syncUserReplayDates(LocalDate currentDate) {
@@ -802,17 +933,6 @@ public class SimulationService {
         }
         if (accountChanged) {
             simAccountRepository.save(account);
-        }
-    }
-
-    private LocalDate parseStartDateOrDefault(String startDate) {
-        if (startDate == null || startDate.isBlank()) {
-            return DEFAULT_REPLAY_START_DATE;
-        }
-        try {
-            return LocalDate.parse(startDate.trim());
-        } catch (Exception e) {
-            throw new IllegalArgumentException("startDate must be yyyy-MM-dd");
         }
     }
 

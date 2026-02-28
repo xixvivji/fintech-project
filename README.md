@@ -131,6 +131,16 @@
 - PowerShell 스크립트: `scripts/backfill-prices.ps1`
 - 실패 종목 스킵 / 로그 저장 지원
 
+### 4. 시간 모드 / 주문 처리 모드
+운영 전환을 위해 시뮬레이션 시간을 `REPLAY`/`LIVE`로 전환할 수 있고, 주문 처리는 동기/비동기 큐 모드를 선택할 수 있습니다.
+
+- `SIM_TIME_MODE=REPLAY|LIVE`
+- `SIM_TIME_TICK_SECONDS` (기본 `60`)
+- `SIM_TIME_STEP_DAYS` (REPLAY 모드에서 틱당 진행 일수, 기본 `1`)
+- `SIM_TIME_ZONE_ID` (LIVE 모드 기준 타임존, 기본 `Asia/Seoul`)
+- `SIM_ORDER_ASYNC_ENABLED=true|false` (비동기 주문 큐)
+- `SIM_ORDER_POLL_MILLIS`, `SIM_ORDER_BATCH_SIZE`, `SIM_ORDER_MAX_RETRIES`
+
 ## 데이터 적재 결과 (예시)
 
 - 백필 대상: 50개 종목
