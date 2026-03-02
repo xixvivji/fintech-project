@@ -373,6 +373,44 @@ public class SimulationService {
         return result;
     }
 
+    @Transactional(readOnly = true)
+    public synchronized SimOrderQueueStatusDto getOrderQueueStatus(Long userId) {
+        validateUserId(userId);
+        validateAdminUser(userId);
+
+        long receivedCount = simOrderEventRepository.countByStatus(ORDER_STATUS_RECEIVED);
+        long processedCount = simOrderEventRepository.countByStatus(ORDER_STATUS_PROCESSED);
+        long failedCount = simOrderEventRepository.countByStatus(ORDER_STATUS_FAILED);
+
+        List<SimOrderQueueFailureDto> recentFailures = simOrderEventRepository
+                .findTop20ByStatusOrderByProcessedAtDescIdDesc(ORDER_STATUS_FAILED)
+                .stream()
+                .map(row -> new SimOrderQueueFailureDto(
+                        row.getId(),
+                        row.getUserId(),
+                        row.getCode(),
+                        row.getSide(),
+                        row.getOrderType(),
+                        row.getQuantity() == null ? 0 : row.getQuantity(),
+                        row.getRetryCount(),
+                        row.getErrorMessage(),
+                        row.getCreatedAt(),
+                        row.getProcessedAt()
+                ))
+                .toList();
+
+        return new SimOrderQueueStatusDto(
+                orderQueueProperties.isAsyncEnabled(),
+                Math.max(200, orderQueueProperties.getPollMillis()),
+                Math.max(1, orderQueueProperties.getBatchSize()),
+                Math.max(1, orderQueueProperties.getMaxRetries()),
+                receivedCount,
+                processedCount,
+                failedCount,
+                recentFailures
+        );
+    }
+
     @Transactional
     public synchronized List<SimAutoBuyRuleDto> getAutoBuyRules(Long userId) {
         validateUserId(userId);

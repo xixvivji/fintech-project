@@ -79,6 +79,12 @@ public class SimulationController {
         return simulationService.getTradeExecutions(userId);
     }
 
+    @GetMapping("/orders/queue-status")
+    public SimOrderQueueStatusDto getOrderQueueStatus(@RequestHeader("Authorization") String authorizationHeader) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
+        return simulationService.getOrderQueueStatus(userId);
+    }
+
     @GetMapping("/rankings")
     public List<SimRankingDto> getRankings(@RequestHeader("Authorization") String authorizationHeader) {
         Long userId = jwtService.validateAndGetUserId(authorizationHeader);
