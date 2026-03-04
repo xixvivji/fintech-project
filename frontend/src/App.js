@@ -189,16 +189,17 @@ export default function App() {
     } catch {}
   }, [authToken, authHeaders]);
 
-  const loadPendingOrders = useCallback(async () => {
+  const loadPendingOrders = useCallback(async (options = {}) => {
     if (!authToken) return;
-    setPendingLoading(true);
+    const silent = Boolean(options?.silent);
+    if (!silent) setPendingLoading(true);
     try {
       const res = await axios.get(`${API_BASE_URL}/api/sim/orders/pending`, { headers: authHeaders() });
       setPendingOrders(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       setTradeMessage(`미체결 주문 조회 실패: ${parseError(err, "서버 오류")}`);
     } finally {
-      setPendingLoading(false);
+      if (!silent) setPendingLoading(false);
     }
   }, [authToken, authHeaders]);
 
@@ -267,7 +268,7 @@ export default function App() {
       loadLeagueState();
       loadPortfolio();
       if (path === "/sim") {
-        loadPendingOrders();
+        loadPendingOrders({ silent: true });
         loadExecutions();
         if (simOrderTab === "rankings") loadRankings();
       }

@@ -67,6 +67,7 @@ export default function SimulationPage(props) {
   const [orderbook, setOrderbook] = useState(null);
   const [orderbookLoading, setOrderbookLoading] = useState(false);
   const [orderbookError, setOrderbookError] = useState("");
+  const [isMarketOpenKst, setIsMarketOpenKst] = useState(true);
   const [autoBuyForm, setAutoBuyForm] = useState({
     name: "",
     code: tradeCode || "005930",
@@ -84,6 +85,30 @@ export default function SimulationPage(props) {
   }, [autoBuyForm.code, autoBuyForm.quantity, getStockNameByCode]);
 
   const authHeaders = () => (authToken ? { Authorization: `Bearer ${authToken}` } : {});
+
+  useEffect(() => {
+    const computeIsOpen = () => {
+      try {
+        const now = new Date();
+        const kstParts = new Intl.DateTimeFormat("en-GB", {
+          timeZone: "Asia/Seoul",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        }).formatToParts(now);
+        const hour = Number(kstParts.find((p) => p.type === "hour")?.value || 0);
+        const minute = Number(kstParts.find((p) => p.type === "minute")?.value || 0);
+        const totalMinutes = hour * 60 + minute;
+        const isOpen = totalMinutes >= 9 * 60 && totalMinutes <= 20 * 60;
+        setIsMarketOpenKst(isOpen);
+      } catch (e) {
+        setIsMarketOpenKst(true);
+      }
+    };
+    computeIsOpen();
+    const timer = window.setInterval(computeIsOpen, 30000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const loadAutoBuyRules = async () => {
     if (!isLoggedIn || !authToken) return;
@@ -134,7 +159,7 @@ export default function SimulationPage(props) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [apiBaseUrl, tradeCode]);
+  }, [apiBaseUrl, tradeCode, tradeMessage]);
 
   const saveAutoBuyRule = async () => {
     try {
@@ -279,13 +304,26 @@ export default function SimulationPage(props) {
             />
           </>
         )}
-        <button type="button" className="sim-holding-buy-btn" disabled={simLoading} onClick={() => openOrderConfirm("BUY")}>
+        <button
+          type="button"
+          className="sim-holding-buy-btn"
+          disabled={simLoading || (tradeOrderType === "MARKET" && !isMarketOpenKst)}
+          onClick={() => openOrderConfirm("BUY")}
+        >
           매수
         </button>
-        <button type="button" className="sim-holding-sell-btn" disabled={simLoading} onClick={() => openOrderConfirm("SELL")}>
+        <button
+          type="button"
+          className="sim-holding-sell-btn"
+          disabled={simLoading || !isMarketOpenKst}
+          onClick={() => openOrderConfirm("SELL")}
+        >
           매도
         </button>
       </div>
+      {!isMarketOpenKst && (
+        <div className="sim-page-muted">장외 시간(한국시간 09:00~20:00 외)에는 매도 주문이 비활성화됩니다.</div>
+      )}
 
       {tradeMessage && <div className="sim-trade-message">{tradeMessage}</div>}
 
@@ -454,7 +492,16 @@ export default function SimulationPage(props) {
               {orderbook?.time ? <div style={{ fontSize: 12, color: "#64748b" }}>업데이트: {orderbook.time}</div> : null}
             </div>
             <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 8, fontSize: 13 }}>
-              <span>현재가: <strong>{orderbook?.currentPrice ? `${fmt(orderbook.currentPrice)}원` : "-"}</strong></span>
+              <span>
+                현재가:{" "}
+                <strong>
+                  {orderbook?.currentPrice
+                    ? `${fmt(orderbook.currentPrice)}원`
+                    : simSelectedPrice?.price
+                      ? `${fmt(Number(simSelectedPrice.price))}원`
+                      : "-"}
+                </strong>
+              </span>
               <span>총 매도잔량: <strong>{orderbook?.totalAskQty != null ? fmt(orderbook.totalAskQty) : "-"}</strong></span>
               <span>총 매수잔량: <strong>{orderbook?.totalBidQty != null ? fmt(orderbook.totalBidQty) : "-"}</strong></span>
               <span>체결강도: <strong>{orderbook?.executionStrength != null ? `${Number(orderbook.executionStrength).toFixed(2)}%` : "-"}</strong></span>
@@ -730,6 +777,7 @@ export default function SimulationPage(props) {
                           <button
                             type="button"
                             className="sim-holding-sell-btn"
+                            disabled={!isMarketOpenKst}
                             onClick={() => {
                               const q = Math.min(getHoldingOrderQty(h.code), holdQty);
                               openOrderConfirm("SELL", { code: h.code, quantity: q });
@@ -740,6 +788,7 @@ export default function SimulationPage(props) {
                           <button
                             type="button"
                             className="sim-holding-all-sell-btn"
+                            disabled={!isMarketOpenKst}
                             onClick={() => openOrderConfirm("SELL", { code: h.code, quantity: holdQty })}
                           >
                             전량
@@ -774,7 +823,7 @@ export default function SimulationPage(props) {
                 type="button"
                 className={orderConfirmDraft.side === "BUY" ? "sim-holding-buy-btn" : "sim-holding-sell-btn"}
                 onClick={confirmOrderDraft}
-                disabled={simLoading}
+                disabled={simLoading || (orderConfirmDraft.side === "SELL" && !isMarketOpenKst)}
               >
                 확인
               </button>

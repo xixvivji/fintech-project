@@ -4,6 +4,8 @@ import com.example.backend.auth.UserEntity;
 import com.example.backend.auth.UserRepository;
 import com.example.backend.simulation.time.TimeEngine;
 import com.example.backend.simulation.time.TimeEngineProvider;
+import com.example.backend.stock.OrderBookDto;
+import com.example.backend.stock.OrderBookLevelDto;
 import com.example.backend.stock.StockService;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -12,6 +14,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -33,6 +38,9 @@ public class SimulationService {
     private static final String ORDER_STATUS_RECEIVED = "RECEIVED";
     private static final String ORDER_STATUS_PROCESSED = "PROCESSED";
     private static final String ORDER_STATUS_FAILED = "FAILED";
+    private static final ZoneId MARKET_ZONE_ID = ZoneId.of("Asia/Seoul");
+    private static final LocalTime MARKET_OPEN_TIME = LocalTime.of(9, 0);
+    private static final LocalTime MARKET_CLOSE_TIME = LocalTime.of(20, 0);
 
     private final StockService stockService;
     private final SimAccountRepository simAccountRepository;
@@ -104,7 +112,7 @@ public class SimulationService {
         double unrealizedPnl = 0;
 
         for (SimPositionEntity position : simPositionRepository.findByUserId(userId)) {
-            double currentPrice = stockService.getClosePriceOnOrBefore(position.getCode(), valuationDate);
+            double currentPrice = stockService.getRealtimePriceOrClose(position.getCode(), valuationDate);
             double value = currentPrice * position.getQuantity();
             double pnl = (currentPrice - position.getAvgPrice()) * position.getQuantity();
 
@@ -152,6 +160,9 @@ public class SimulationService {
         if (qty <= 0) {
             throw new IllegalArgumentException("Quantity must be at least 1.");
         }
+        if ("SELL".equals(side) && !isMarketOpenNow()) {
+            throw new IllegalArgumentException("장외 시간에는 매도 주문을 낼 수 없습니다. (한국시간 09:00~20:00)");
+        }
 
         LocalDate valuationDate = resolveValuationDate(userId);
         if (orderQueueProperties.isAsyncEnabled()) {
@@ -171,13 +182,90 @@ public class SimulationService {
             LocalDate valuationDate
     ) {
         SimAccountEntity account = getOrCreateAccount(userId);
+        boolean marketOpen = isMarketOpenNow();
 
-        double price = stockService.getClosePriceOnOrBefore(code, valuationDate);
-        if ("MARKET".equals(orderType) || isLimitExecutable(side, price, limitPrice)) {
-            executeTrade(userId, account, code, side, qty, price);
+        if ("MARKET".equals(orderType) && !marketOpen) {
+            validateMarketOrderCanBeReserved(userId, account, code, side, qty, valuationDate);
+            SimPendingOrderEntity pendingOrder = createPendingOrder(userId, code, side, orderType, 0, qty);
+
+            return new SimOrderResponseDto(
+                    "PENDING",
+                    "장외 시간이라 시장가 주문이 예약되었습니다. 장 개시 후 순차 체결됩니다.",
+                    code,
+                    side,
+                    orderType,
+                    null,
+                    qty,
+                    null,
+                    null,
+                    round2(account.getCash()),
+                    pendingOrder.getCreatedAt()
+            );
+        }
+
+        if ("MARKET".equals(orderType)) {
+            MarketFillResult fill = executeMarketOrderByOrderBook(userId, account, code, side, qty, valuationDate);
+            if (fill.filledQuantity <= 0) {
+                if ("BUY".equals(side)) {
+                    throw new IllegalArgumentException("현재 호가 기준으로 매수 가능한 수량이 없습니다.");
+                }
+                SimPendingOrderEntity pendingOrder = createPendingOrder(userId, code, side, orderType, 0, qty);
+                return new SimOrderResponseDto(
+                        "PENDING",
+                        "호가 잔량이 부족하여 시장가 주문이 미체결로 접수되었습니다.",
+                        code,
+                        side,
+                        orderType,
+                        null,
+                        qty,
+                        null,
+                        null,
+                        round2(account.getCash()),
+                        pendingOrder.getCreatedAt()
+                );
+            }
+
             simAccountRepository.save(account);
-            double amount = round2(price * qty);
-            recordExecution(userId, code, side, orderType, limitPrice, qty, price, valuationDate);
+            recordExecution(userId, code, side, orderType, null, fill.filledQuantity, fill.avgPrice, valuationDate);
+
+            if (fill.remainingQuantity > 0) {
+                SimPendingOrderEntity pendingOrder = createPendingOrder(userId, code, side, orderType, 0, fill.remainingQuantity);
+                return new SimOrderResponseDto(
+                        "PARTIALLY_FILLED",
+                        "시장가 주문이 일부 체결되었습니다. 잔여 수량은 미체결로 유지됩니다.",
+                        code,
+                        side,
+                        orderType,
+                        null,
+                        fill.filledQuantity,
+                        round2(fill.avgPrice),
+                        round2(fill.totalAmount),
+                        round2(account.getCash()),
+                        pendingOrder.getCreatedAt()
+                );
+            }
+
+            return new SimOrderResponseDto(
+                    "FILLED",
+                    "주문이 체결되었습니다.",
+                    code,
+                    side,
+                    orderType,
+                    null,
+                    fill.filledQuantity,
+                    round2(fill.avgPrice),
+                    round2(fill.totalAmount),
+                    round2(account.getCash()),
+                    System.currentTimeMillis()
+            );
+        }
+
+        double marketPrice = stockService.getRealtimePriceOrClose(code, valuationDate);
+        if (isLimitExecutable(side, marketPrice, limitPrice)) {
+            executeTrade(userId, account, code, side, qty, marketPrice);
+            simAccountRepository.save(account);
+            double amount = round2(marketPrice * qty);
+            recordExecution(userId, code, side, orderType, limitPrice, qty, marketPrice, valuationDate);
             return new SimOrderResponseDto(
                     "FILLED",
                     "주문이 체결되었습니다.",
@@ -186,7 +274,7 @@ public class SimulationService {
                     orderType,
                     limitPrice,
                     qty,
-                    round2(price),
+                    round2(marketPrice),
                     amount,
                     round2(account.getCash()),
                     System.currentTimeMillis()
@@ -194,16 +282,7 @@ public class SimulationService {
         }
 
         validatePendingOrderCanBePlaced(userId, account, code, side, qty, limitPrice);
-
-        SimPendingOrderEntity pendingOrder = new SimPendingOrderEntity();
-        pendingOrder.setUserId(userId);
-        pendingOrder.setCode(code);
-        pendingOrder.setSide(side);
-        pendingOrder.setOrderType(orderType);
-        pendingOrder.setLimitPrice(limitPrice);
-        pendingOrder.setQuantity(qty);
-        pendingOrder.setCreatedAt(System.currentTimeMillis());
-        simPendingOrderRepository.save(pendingOrder);
+        SimPendingOrderEntity pendingOrder = createPendingOrder(userId, code, side, orderType, limitPrice == null ? 0 : limitPrice, qty);
 
         return new SimOrderResponseDto(
                 "PENDING",
@@ -704,7 +783,7 @@ public class SimulationService {
         SimAccountEntity account = getOrCreateAccount(rule.getUserId());
         double price;
         try {
-            price = stockService.getClosePriceOnOrBefore(rule.getCode(), valuationDate);
+            price = stockService.getRealtimePriceOrClose(rule.getCode(), valuationDate);
         } catch (Exception e) {
             return;
         }
@@ -839,6 +918,9 @@ public class SimulationService {
     }
 
     private boolean isLimitExecutable(String side, double marketPrice, Double limitPrice) {
+        if (limitPrice == null) {
+            return false;
+        }
         if ("BUY".equals(side) && marketPrice > limitPrice) {
             return false;
         }
@@ -904,6 +986,9 @@ public class SimulationService {
     }
 
     private void processPendingOrders(Long userId, LocalDate valuationDate) {
+        if (!isMarketOpenNow()) {
+            return;
+        }
         List<SimPendingOrderEntity> orders = simPendingOrderRepository.findByUserIdOrderByCreatedAtAsc(userId);
         if (orders.isEmpty()) {
             return;
@@ -911,11 +996,26 @@ public class SimulationService {
         SimAccountEntity account = getOrCreateAccount(userId);
         boolean accountChanged = false;
         for (SimPendingOrderEntity order : orders) {
-            double marketPrice = stockService.getClosePriceOnOrBefore(order.getCode(), valuationDate);
-            if (!isLimitExecutable(order.getSide(), marketPrice, order.getLimitPrice())) {
-                continue;
-            }
             try {
+                if ("MARKET".equals(order.getOrderType())) {
+                    MarketFillResult fill = executeMarketOrderByOrderBook(userId, account, order.getCode(), order.getSide(), order.getQuantity(), valuationDate);
+                    if (fill.filledQuantity > 0) {
+                        recordExecution(userId, order.getCode(), order.getSide(), order.getOrderType(), null, fill.filledQuantity, fill.avgPrice, valuationDate);
+                        accountChanged = true;
+                    }
+                    if (fill.remainingQuantity <= 0) {
+                        simPendingOrderRepository.delete(order);
+                    } else if (fill.filledQuantity > 0) {
+                        order.setQuantity(fill.remainingQuantity);
+                        simPendingOrderRepository.save(order);
+                    }
+                    continue;
+                }
+
+                double marketPrice = stockService.getRealtimePriceOrClose(order.getCode(), valuationDate);
+                if (!isLimitExecutable(order.getSide(), marketPrice, order.getLimitPrice())) {
+                    continue;
+                }
                 executeTrade(userId, account, order.getCode(), order.getSide(), order.getQuantity(), marketPrice);
                 recordExecution(userId, order.getCode(), order.getSide(), order.getOrderType(), order.getLimitPrice(), order.getQuantity(), marketPrice, valuationDate);
                 accountChanged = true;
@@ -926,6 +1026,121 @@ public class SimulationService {
         }
         if (accountChanged) {
             simAccountRepository.save(account);
+        }
+    }
+
+    private SimPendingOrderEntity createPendingOrder(Long userId, String code, String side, String orderType, double limitPrice, int quantity) {
+        SimPendingOrderEntity pendingOrder = new SimPendingOrderEntity();
+        pendingOrder.setUserId(userId);
+        pendingOrder.setCode(code);
+        pendingOrder.setSide(side);
+        pendingOrder.setOrderType(orderType);
+        pendingOrder.setLimitPrice(limitPrice);
+        pendingOrder.setQuantity(quantity);
+        pendingOrder.setCreatedAt(System.currentTimeMillis());
+        return simPendingOrderRepository.save(pendingOrder);
+    }
+
+    private MarketFillResult executeMarketOrderByOrderBook(
+            Long userId,
+            SimAccountEntity account,
+            String code,
+            String side,
+            int requestedQuantity,
+            LocalDate valuationDate
+    ) {
+        int remaining = requestedQuantity;
+        int filled = 0;
+        double totalAmount = 0;
+
+        OrderBookDto orderBook = null;
+        try {
+            orderBook = stockService.getOrderBook(code);
+        } catch (Exception ignored) {
+            // Fallback path below uses realtime quote when orderbook is temporarily unavailable.
+        }
+
+        List<OrderBookLevelDto> levels = orderBook == null || orderBook.getLevels() == null
+                ? List.of()
+                : orderBook.getLevels();
+
+        for (OrderBookLevelDto level : levels) {
+            if (remaining <= 0) break;
+
+            Double levelPrice = "BUY".equals(side) ? level.getAskPrice() : level.getBidPrice();
+            Long levelQty = "BUY".equals(side) ? level.getAskQty() : level.getBidQty();
+            if (levelPrice == null || !Double.isFinite(levelPrice) || levelPrice <= 0 || levelQty == null || levelQty <= 0) {
+                continue;
+            }
+
+            int availableQty = (int) Math.min(Integer.MAX_VALUE, levelQty);
+            int tradableQty = Math.min(remaining, availableQty);
+            if ("BUY".equals(side)) {
+                int affordableQty = (int) Math.floor(account.getCash() / levelPrice);
+                tradableQty = Math.min(tradableQty, Math.max(0, affordableQty));
+            }
+            if (tradableQty <= 0) {
+                continue;
+            }
+
+            executeTrade(userId, account, code, side, tradableQty, levelPrice);
+            remaining -= tradableQty;
+            filled += tradableQty;
+            totalAmount += levelPrice * tradableQty;
+        }
+
+        if (filled == 0) {
+            double fallbackPrice = stockService.getRealtimePriceOrClose(code, valuationDate);
+            if (fallbackPrice > 0) {
+                int fallbackQty = remaining;
+                if ("BUY".equals(side)) {
+                    int affordableQty = (int) Math.floor(account.getCash() / fallbackPrice);
+                    fallbackQty = Math.min(fallbackQty, Math.max(0, affordableQty));
+                }
+                if (fallbackQty > 0) {
+                    executeTrade(userId, account, code, side, fallbackQty, fallbackPrice);
+                    remaining -= fallbackQty;
+                    filled += fallbackQty;
+                    totalAmount += fallbackPrice * fallbackQty;
+                }
+            }
+        }
+
+        double avgPrice = filled <= 0 ? 0 : totalAmount / filled;
+        return new MarketFillResult(filled, Math.max(0, remaining), avgPrice, totalAmount);
+    }
+
+    private void validateMarketOrderCanBeReserved(Long userId, SimAccountEntity account, String code, String side, int qty, LocalDate valuationDate) {
+        if ("SELL".equals(side)) {
+            SimPositionEntity position = simPositionRepository.findByUserIdAndCode(userId, code).orElse(null);
+            if (position == null || position.getQuantity() < qty) {
+                throw new IllegalArgumentException("매도 가능한 수량이 부족합니다.");
+            }
+            return;
+        }
+        double reservePrice = stockService.getRealtimePriceOrClose(code, valuationDate);
+        double estimatedAmount = reservePrice * qty;
+        if (account.getCash() < estimatedAmount) {
+            throw new IllegalArgumentException("예수금이 부족합니다.");
+        }
+    }
+
+    private boolean isMarketOpenNow() {
+        LocalTime now = ZonedDateTime.now(MARKET_ZONE_ID).toLocalTime();
+        return !now.isBefore(MARKET_OPEN_TIME) && !now.isAfter(MARKET_CLOSE_TIME);
+    }
+
+    private static class MarketFillResult {
+        private final int filledQuantity;
+        private final int remainingQuantity;
+        private final double avgPrice;
+        private final double totalAmount;
+
+        private MarketFillResult(int filledQuantity, int remainingQuantity, double avgPrice, double totalAmount) {
+            this.filledQuantity = filledQuantity;
+            this.remainingQuantity = remainingQuantity;
+            this.avgPrice = avgPrice;
+            this.totalAmount = totalAmount;
         }
     }
 

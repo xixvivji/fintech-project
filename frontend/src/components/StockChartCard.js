@@ -2,6 +2,9 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createChart } from "lightweight-charts";
 import axios from "axios";
 
+const MIN_HISTORY_DATE = "2015-01-01";
+const LEFT_EDGE_LOAD_THRESHOLD = 20;
+
 function normalizeCandles(rows) {
   if (!Array.isArray(rows)) return [];
   return rows
@@ -76,6 +79,17 @@ function fmtPrice(v) {
   return new Intl.NumberFormat("ko-KR").format(Math.round(Number(v)));
 }
 
+function mergeCandles(existingRows, incomingRows) {
+  const merged = new Map();
+  for (const row of normalizeCandles(existingRows)) {
+    merged.set(row.time, row);
+  }
+  for (const row of normalizeCandles(incomingRows)) {
+    merged.set(row.time, row);
+  }
+  return Array.from(merged.values()).sort((a, b) => String(a.time).localeCompare(String(b.time)));
+}
+
 export default function StockChartCard({
   apiBaseUrl,
   code,
@@ -94,6 +108,8 @@ export default function StockChartCard({
   const mainSeriesRef = useRef(null);
   const compareSeriesRef = useRef(null);
   const mainRowsRef = useRef([]);
+  const loadingMoreRef = useRef(false);
+  const reachedMinHistoryRef = useRef(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [period, setPeriod] = useState("DAY");
@@ -143,6 +159,8 @@ export default function StockChartCard({
     chartRef.current = chart;
     mainSeriesRef.current = mainSeries;
     compareSeriesRef.current = compareSeries;
+    loadingMoreRef.current = false;
+    reachedMinHistoryRef.current = false;
 
     chart.subscribeCrosshairMove((param) => {
       if (!param?.time || !mainSeriesRef.current) {
@@ -170,16 +188,68 @@ export default function StockChartCard({
       });
     });
 
+    const onVisibleLogicalRangeChange = async (range) => {
+      if (compareCode) return;
+      if (!range || loadingMoreRef.current || reachedMinHistoryRef.current) return;
+      if (range.from > LEFT_EDGE_LOAD_THRESHOLD) return;
+
+      const rows = Array.isArray(mainRowsRef.current) ? mainRowsRef.current : [];
+      if (!rows.length) return;
+      const earliest = rows[0]?.time;
+      if (!earliest || earliest <= MIN_HISTORY_DATE) {
+        reachedMinHistoryRef.current = true;
+        return;
+      }
+
+      loadingMoreRef.current = true;
+      const prevRange = chart.timeScale().getVisibleLogicalRange();
+      try {
+        const res = await axios.get(`${apiBaseUrl}/api/stock/chart/${code}`, {
+          params: { months, endDate: earliest },
+        });
+        const olderRows = normalizeCandles(res?.data);
+        if (!olderRows.length) {
+          reachedMinHistoryRef.current = true;
+          return;
+        }
+
+        const prevShownLength = compareCode ? toRelativeSeries(rows).length : aggregateCandles(rows, period).length;
+        const nextRows = mergeCandles(rows, olderRows);
+        const nextShownLength = compareCode ? toRelativeSeries(nextRows).length : aggregateCandles(nextRows, period).length;
+        const addedCount = Math.max(0, nextShownLength - prevShownLength);
+        mainRowsRef.current = nextRows;
+        applyMainSeriesData(nextRows);
+
+        const newEarliest = nextRows[0]?.time;
+        if (!newEarliest || newEarliest <= MIN_HISTORY_DATE || addedCount === 0) {
+          reachedMinHistoryRef.current = true;
+        }
+
+        if (prevRange && addedCount > 0) {
+          chart.timeScale().setVisibleLogicalRange({
+            from: prevRange.from + addedCount,
+            to: prevRange.to + addedCount,
+          });
+        }
+      } catch (_) {
+        // Ignore transient load-more failures.
+      } finally {
+        loadingMoreRef.current = false;
+      }
+    };
+    chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange);
+
     const onResize = () => {
       if (!wrapRef.current || !chartRef.current) return;
       chartRef.current.applyOptions({ width: wrapRef.current.clientWidth });
     };
     window.addEventListener("resize", onResize);
     return () => {
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange);
       window.removeEventListener("resize", onResize);
       chart.remove();
     };
-  }, [height, compareCode]);
+  }, [height, compareCode, apiBaseUrl, code, months, applyMainSeriesData]);
 
   useEffect(() => {
     let cancelled = false;
@@ -216,6 +286,7 @@ export default function StockChartCard({
         } else {
           const rows = normalizeCandles(mainRes?.data);
           mainRowsRef.current = rows;
+          reachedMinHistoryRef.current = rows.length > 0 && rows[0].time <= MIN_HISTORY_DATE;
           if (!rows.length) {
             setError("차트 데이터가 없습니다.");
             mainSeriesRef.current.setData([]);

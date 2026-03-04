@@ -331,6 +331,14 @@ public class StockService {
                 if (currentPrice == null) {
                     currentPrice = parseDoubleOrNull(String.valueOf(output.get("antc_cnpr")));
                 }
+                try {
+                    RealtimeQuoteDto quote = getRealtimeQuote(normalizedCode);
+                    if (quote != null && quote.getPrice() > 0) {
+                        currentPrice = quote.getPrice();
+                    }
+                } catch (Exception ignored) {
+                    // Keep orderbook-provided current price if quote refresh fails.
+                }
                 Long totalAsk = parseLongOrNull(String.valueOf(output.get("total_askp_rsqn")));
                 Long totalBid = parseLongOrNull(String.valueOf(output.get("total_bidp_rsqn")));
                 Double strength = null;
@@ -358,9 +366,10 @@ public class StockService {
         }
 
         // Fallback with empty levels when orderbook endpoint is temporarily unavailable.
+        // Keep current price aligned with chart quote (realtime first, close-price last fallback).
         double fallbackPrice = 0;
         try {
-            fallbackPrice = getLatestClosePrice(normalizedCode);
+            fallbackPrice = getRealtimePriceOrClose(normalizedCode, LocalDate.now());
         } catch (Exception ignored) {
         }
         if (fallbackPrice > 0) {
@@ -391,6 +400,21 @@ public class StockService {
             }
         }
         throw new IllegalStateException("No close price on or before " + target + " for " + normalizedCode);
+    }
+
+    public double getRealtimePriceOrClose(String stockCode, LocalDate fallbackDate) {
+        String normalizedCode = normalizeCode(stockCode);
+        try {
+            RealtimeQuoteDto quote = getRealtimeQuote(normalizedCode);
+            if (quote != null && quote.getPrice() > 0) {
+                return quote.getPrice();
+            }
+        } catch (Exception ignored) {
+            // Realtime quote can fail transiently; use close-price fallback.
+        }
+
+        LocalDate target = fallbackDate == null ? LocalDate.now() : fallbackDate;
+        return getClosePriceOnOrBefore(normalizedCode, target);
     }
 
     @Transactional
