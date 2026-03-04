@@ -210,6 +210,8 @@ export default function SimulationPage(props) {
   const running = Boolean(leagueState?.running ?? replayState?.running);
   const currentDate = leagueState?.currentDate || portfolio?.valuationDate || replayState?.currentDate || "-";
   const anchorDate = leagueState?.anchorDate || replayState?.anchorDate || "-";
+  const stepDays = leagueState?.stepDays ?? replayState?.stepDays ?? 1;
+  const modeLabel = stepDays === 0 ? "LIVE" : "REPLAY";
 
   return (
     <div className="app-card sim-page-card sim-page-wrap">
@@ -231,6 +233,7 @@ export default function SimulationPage(props) {
       )}
 
       <div className="app-toolbar-row sim-inline-row sim-inline-row-gap-sm">
+        <span>Mode: {modeLabel}</span>
         <span>리그 상태: {running ? "진행 중" : "정지"}</span>
         <span>공용 기준일: {currentDate}</span>
         <span>시작일: {anchorDate}</span>
