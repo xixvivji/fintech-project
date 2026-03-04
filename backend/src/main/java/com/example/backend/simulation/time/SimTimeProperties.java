@@ -6,9 +6,9 @@ import org.springframework.stereotype.Component;
 @Component
 @ConfigurationProperties(prefix = "sim.time")
 public class SimTimeProperties {
-    private String mode = "REPLAY";
+    private String mode = "LIVE";
     private int tickSeconds = 60;
-    private int stepDays = 1;
+    private int stepDays = 0;
     private String zoneId = "Asia/Seoul";
 
     public String getMode() {

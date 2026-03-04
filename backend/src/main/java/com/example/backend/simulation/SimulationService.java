@@ -132,7 +132,7 @@ public class SimulationService {
                 round2(unrealizedPnl),
                 holdings,
                 valuationDate.toString(),
-                getOrCreateLeagueState().isRunning()
+                true
         );
     }
 
@@ -262,55 +262,28 @@ public class SimulationService {
     @Transactional
     public synchronized PortfolioResponseDto startReplay(Long userId, String startDate) {
         validateUserId(userId);
-        validateAdminUser(userId);
-        TimeEngine engine = timeEngineProvider.get();
-
-        SimLeagueStateEntity leagueState = getOrCreateLeagueState();
-        if (leagueState.getAnchorDate() == null || leagueState.getAnchorDate().isBlank()) {
-            LocalDate date = engine.parseAnchorDate(startDate, DEFAULT_REPLAY_START_DATE);
-            leagueState.setAnchorDate(date.toString());
-            leagueState.setCurrentDate(date.toString());
-        } else if (leagueState.getCurrentDate() == null || leagueState.getCurrentDate().isBlank()) {
-            leagueState.setCurrentDate(leagueState.getAnchorDate());
-        }
-        leagueState.setRunning(true);
-        simLeagueStateRepository.save(leagueState);
-
-        SimReplayStateEntity replayState = getOrCreateReplayState(userId);
-        replayState.setAnchorDate(leagueState.getAnchorDate());
-        replayState.setReplayDate(leagueState.getCurrentDate());
-        replayState.setRunning(true);
-        simReplayStateRepository.save(replayState);
-
-        processPendingOrders(userId, LocalDate.parse(leagueState.getCurrentDate()));
+        // Replay mode is disabled; keep endpoint for backward compatibility.
+        processPendingOrders(userId, resolveValuationDate(userId));
         return getPortfolio(userId);
     }
 
     @Transactional
     public synchronized PortfolioResponseDto pauseReplay(Long userId) {
         validateUserId(userId);
-        validateAdminUser(userId);
-
-        SimLeagueStateEntity leagueState = getOrCreateLeagueState();
-        leagueState.setRunning(false);
-        simLeagueStateRepository.save(leagueState);
-
-        SimReplayStateEntity replayState = getOrCreateReplayState(userId);
-        replayState.setRunning(false);
-        simReplayStateRepository.save(replayState);
+        // Replay mode is disabled; keep endpoint for backward compatibility.
         return getPortfolio(userId);
     }
 
     @Transactional
     public synchronized ReplayStateDto getReplayState(Long userId) {
         validateUserId(userId);
-        SimLeagueStateEntity leagueState = getOrCreateLeagueState();
+        LocalDate now = resolveValuationDate(userId);
         PortfolioResponseDto portfolio = getPortfolio(userId);
         TimeEngine engine = timeEngineProvider.get();
         return new ReplayStateDto(
                 portfolio.getValuationDate(),
-                leagueState.getAnchorDate(),
-                leagueState.isRunning(),
+                now.toString(),
+                true,
                 engine.stepDays(),
                 engine.tickSeconds(),
                 portfolio
@@ -320,13 +293,13 @@ public class SimulationService {
     @Transactional
     public synchronized SimLeagueStateDto getLeagueState(Long userId) {
         validateUserId(userId);
-        SimLeagueStateEntity leagueState = getOrCreateLeagueState();
+        LocalDate now = resolveValuationDate(userId);
         TimeEngine engine = timeEngineProvider.get();
         return new SimLeagueStateDto(
                 DEFAULT_LEAGUE_CODE,
-                leagueState.getAnchorDate(),
-                leagueState.getCurrentDate(),
-                leagueState.isRunning(),
+                now.toString(),
+                now.toString(),
+                true,
                 engine.stepDays(),
                 engine.tickSeconds()
         );
@@ -519,7 +492,7 @@ public class SimulationService {
         int safeLimit = Math.max(1, Math.min(limit, 20));
         int safeDays = Math.max(1, Math.min(days, 30));
 
-        LocalDate leagueDate = LocalDate.parse(getOrCreateLeagueState().getCurrentDate());
+        LocalDate leagueDate = resolveValuationDate(currentUserId);
         LocalDate startDate = leagueDate.minusDays(safeDays - 1L);
 
         List<SimTradeExecutionEntity> executions = simTradeExecutionRepository.findByValuationDateBetween(
@@ -620,19 +593,10 @@ public class SimulationService {
 
     @Transactional
     protected synchronized void advanceReplayIfRunning() {
-        TimeEngine engine = timeEngineProvider.get();
-        SimLeagueStateEntity leagueState = getOrCreateLeagueState();
-        if (!leagueState.isRunning() || leagueState.getCurrentDate() == null || leagueState.getCurrentDate().isBlank()) {
-            return;
-        }
-
-        LocalDate next = engine.nextDate(LocalDate.parse(leagueState.getCurrentDate()));
-        leagueState.setCurrentDate(next.toString());
-        simLeagueStateRepository.save(leagueState);
-
-        syncUserReplayDates(next);
-        processAutoBuyRulesForAllUsers(next);
-        processPendingOrdersForAllUsers(next);
+        LocalDate now = timeEngineProvider.get().defaultAnchorDate();
+        syncUserReplayDates(now);
+        processAutoBuyRulesForAllUsers(now);
+        processPendingOrdersForAllUsers(now);
     }
 
     @Transactional
@@ -687,15 +651,6 @@ public class SimulationService {
     }
 
     private LocalDate resolveValuationDate(Long userId) {
-        SimLeagueStateEntity leagueState = getOrCreateLeagueState();
-        if (leagueState.getCurrentDate() != null && !leagueState.getCurrentDate().isBlank()) {
-            return LocalDate.parse(leagueState.getCurrentDate());
-        }
-
-        SimReplayStateEntity replayState = getOrCreateReplayState(userId);
-        if (replayState.getReplayDate() != null && !replayState.getReplayDate().isBlank()) {
-            return LocalDate.parse(replayState.getReplayDate());
-        }
         return timeEngineProvider.get().defaultAnchorDate();
     }
 

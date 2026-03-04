@@ -82,10 +82,8 @@ export default function App() {
   const [isNarrowScreen, setIsNarrowScreen] = useState(window.innerWidth < 1024);
 
   const [simLoading, setSimLoading] = useState(false);
-  const [replayLoading, setReplayLoading] = useState(false);
   const [tradeMessage, setTradeMessage] = useState("");
   const [portfolio, setPortfolio] = useState(null);
-  const [replayState, setReplayState] = useState(null);
   const [leagueState, setLeagueState] = useState(null);
   const [tradeCode, setTradeCode] = useState("005930");
   const [tradeQty, setTradeQty] = useState("1");
@@ -113,7 +111,7 @@ export default function App() {
   const tradeableCodes = useMemo(() => STOCK_OPTIONS.map((s) => s.code), []);
   const viewCodeSet = useMemo(() => new Set(viewCodes), [viewCodes]);
   const watchlistCodeSet = useMemo(() => new Set(watchlistCodes), [watchlistCodes]);
-  const chartEndDate = leagueState?.currentDate || replayState?.currentDate || undefined;
+  const chartEndDate = undefined;
 
   const navigateTo = useCallback((next) => {
     const normalized = normalizePath(next);
@@ -183,15 +181,6 @@ export default function App() {
     }
   }, [authToken, authHeaders, tradeCode, tradeableCodes]);
 
-  const loadReplayState = useCallback(async () => {
-    if (!authToken) return;
-    try {
-      const res = await axios.get(`${API_BASE_URL}/api/sim/replay/state`, { headers: authHeaders() });
-      setReplayState(res.data);
-      if (res.data?.portfolio) setPortfolio(res.data.portfolio);
-    } catch {}
-  }, [authToken, authHeaders]);
-
   const loadLeagueState = useCallback(async () => {
     if (!authToken) return;
     try {
@@ -240,24 +229,8 @@ export default function App() {
   }, [authToken, authHeaders]);
 
   const refreshSimData = useCallback(async () => {
-    await Promise.all([loadPortfolio(), loadReplayState(), loadLeagueState(), loadPendingOrders(), loadExecutions(), loadRankings()]);
-  }, [loadPortfolio, loadReplayState, loadLeagueState, loadPendingOrders, loadExecutions, loadRankings]);
-
-  const startReplay = useCallback(async () => {
-    if (!authToken) return;
-    setReplayLoading(true);
-    setTradeMessage("");
-    try {
-      const res = await axios.post(`${API_BASE_URL}/api/sim/replay/start`, {}, { headers: authHeaders() });
-      setPortfolio(res.data);
-      await Promise.all([loadReplayState(), loadLeagueState(), loadPendingOrders(), loadExecutions(), loadRankings()]);
-      setTradeMessage("리플레이를 시작했습니다.");
-    } catch (err) {
-      setTradeMessage(`리플레이 시작 실패: ${parseError(err, "서버 오류")}`);
-    } finally {
-      setReplayLoading(false);
-    }
-  }, [authToken, authHeaders, loadExecutions, loadLeagueState, loadPendingOrders, loadRankings, loadReplayState]);
+    await Promise.all([loadPortfolio(), loadLeagueState(), loadPendingOrders(), loadExecutions(), loadRankings()]);
+  }, [loadPortfolio, loadLeagueState, loadPendingOrders, loadExecutions, loadRankings]);
 
   useEffect(() => {
     const onResize = () => setIsNarrowScreen(window.innerWidth < 1024);
@@ -294,19 +267,11 @@ export default function App() {
       loadLeagueState();
       loadPortfolio();
       if (path === "/sim") {
-        loadReplayState();
         if (simOrderTab === "rankings") loadRankings();
       }
     }, 10000);
     return () => window.clearInterval(id);
-  }, [authToken, path, simOrderTab, loadLeagueState, loadPortfolio, loadRankings, loadReplayState]);
-
-  useEffect(() => {
-    if (!authToken || path !== "/sim" || !leagueState) return;
-    if (!isLeagueAdmin) return;
-    if (leagueState.running) return;
-    startReplay();
-  }, [authToken, path, leagueState, isLeagueAdmin, startReplay]);
+  }, [authToken, path, simOrderTab, loadLeagueState, loadPortfolio, loadRankings]);
 
   const handleLogin = useCallback(async () => {
     if (!loginName.trim() || !loginPassword.trim()) {
@@ -354,7 +319,6 @@ export default function App() {
   const handleLogout = useCallback(() => {
     clearSession();
     setPortfolio(null);
-    setReplayState(null);
     setLeagueState(null);
     setPendingOrders([]);
     setExecutions([]);
@@ -423,35 +387,20 @@ export default function App() {
     }
   }, [authHeaders, authToken, watchlistCodeSet]);
 
-  const pauseReplay = useCallback(async () => {
-    if (!authToken) return;
-    setReplayLoading(true);
-    try {
-      const res = await axios.post(`${API_BASE_URL}/api/sim/replay/pause`, {}, { headers: authHeaders() });
-      setPortfolio(res.data);
-      await Promise.all([loadReplayState(), loadLeagueState()]);
-      setTradeMessage("리플레이를 일시정지했습니다.");
-    } catch (err) {
-      setTradeMessage(`일시정지 실패: ${parseError(err, "서버 오류")}`);
-    } finally {
-      setReplayLoading(false);
-    }
-  }, [authHeaders, authToken, loadLeagueState, loadReplayState]);
-
   const resetSimulation = useCallback(async () => {
     if (!authToken) return;
     setSimLoading(true);
     try {
       const res = await axios.post(`${API_BASE_URL}/api/sim/reset`, {}, { headers: authHeaders() });
       setPortfolio(res.data);
-      await Promise.all([loadReplayState(), loadLeagueState(), loadPendingOrders(), loadExecutions(), loadRankings()]);
+      await Promise.all([loadLeagueState(), loadPendingOrders(), loadExecutions(), loadRankings()]);
       setTradeMessage("모의투자 계좌를 초기화했습니다.");
     } catch (err) {
       setTradeMessage(`초기화 실패: ${parseError(err, "서버 오류")}`);
     } finally {
       setSimLoading(false);
     }
-  }, [authHeaders, authToken, loadExecutions, loadLeagueState, loadPendingOrders, loadRankings, loadReplayState]);
+  }, [authHeaders, authToken, loadExecutions, loadLeagueState, loadPendingOrders, loadRankings]);
 
   const parseQty = useCallback((value) => {
     const n = Number(value);
@@ -496,13 +445,13 @@ export default function App() {
       );
       setTradeMessage(res.data?.message || "주문이 처리되었습니다.");
       setOrderConfirmDraft(null);
-      await Promise.all([loadPortfolio(), loadReplayState(), loadPendingOrders(), loadExecutions(), loadRankings()]);
+      await Promise.all([loadPortfolio(), loadPendingOrders(), loadExecutions(), loadRankings()]);
     } catch (err) {
       setTradeMessage(`주문 실패: ${parseError(err, "서버 오류")}`);
     } finally {
       setSimLoading(false);
     }
-  }, [authHeaders, authToken, loadExecutions, loadPendingOrders, loadPortfolio, loadRankings, loadReplayState, orderConfirmDraft]);
+  }, [authHeaders, authToken, loadExecutions, loadPendingOrders, loadPortfolio, loadRankings, orderConfirmDraft]);
 
   const cancelPendingOrder = useCallback(async (orderId) => {
     if (!authToken) return;
@@ -795,13 +744,9 @@ export default function App() {
             authToken={authToken}
             isLoggedIn={isLoggedIn}
             isLeagueAdmin={isLeagueAdmin}
-            replayLoading={replayLoading}
             simLoading={simLoading}
-            startReplay={startReplay}
-            pauseReplay={pauseReplay}
             resetSimulation={resetSimulation}
             leagueState={leagueState}
-            replayState={replayState}
             portfolio={portfolio}
             tradeCode={tradeCode}
             setTradeCode={setTradeCode}

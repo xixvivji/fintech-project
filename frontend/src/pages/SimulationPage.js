@@ -7,14 +7,9 @@ export default function SimulationPage(props) {
     apiBaseUrl,
     authToken,
     isLoggedIn,
-    isLeagueAdmin,
-    replayLoading,
     simLoading,
-    startReplay,
-    pauseReplay,
     resetSimulation,
     leagueState,
-    replayState,
     portfolio,
     tradeCode,
     setTradeCode,
@@ -207,39 +202,21 @@ export default function SimulationPage(props) {
     );
   }
 
-  const running = Boolean(leagueState?.running ?? replayState?.running);
-  const currentDate = leagueState?.currentDate || portfolio?.valuationDate || replayState?.currentDate || "-";
-  const anchorDate = leagueState?.anchorDate || replayState?.anchorDate || "-";
-  const stepDays = leagueState?.stepDays ?? replayState?.stepDays ?? 1;
-  const modeLabel = stepDays === 0 ? "LIVE" : "REPLAY";
+  const currentDate = portfolio?.valuationDate || leagueState?.currentDate || "-";
 
   return (
     <div className="app-card sim-page-card sim-page-wrap">
-      <h3 className="sim-page-title">모의투자</h3>
+      <h3 className="sim-page-title">투자</h3>
 
-      {isLeagueAdmin && (
       <div className="app-toolbar-row sim-inline-row">
-        <span className="sim-page-subtle">공용 리그 기준으로 자동 진행됩니다.</span>
-        <button type="button" onClick={startReplay} disabled={replayLoading || simLoading}>
-          리플레이 시작
-        </button>
-        <button type="button" onClick={pauseReplay} disabled={replayLoading || simLoading}>
-          일시정지
-        </button>
-        <button type="button" onClick={resetSimulation} disabled={replayLoading || simLoading}>
+        <span className="sim-page-subtle">실시간 기준으로 운영됩니다.</span>
+        <button type="button" onClick={resetSimulation} disabled={simLoading}>
           초기화
         </button>
       </div>
-      )}
 
       <div className="app-toolbar-row sim-inline-row sim-inline-row-gap-sm">
-        <span>Mode: {modeLabel}</span>
-        <span>리그 상태: {running ? "진행 중" : "정지"}</span>
-        <span>공용 기준일: {currentDate}</span>
-        <span>시작일: {anchorDate}</span>
-        {leagueState?.tickSeconds ? (
-          <span>틱: {leagueState.tickSeconds}초 / {leagueState.stepDays || 1}일</span>
-        ) : null}
+        <span>거래 기준일: {currentDate}</span>
       </div>
 
       <div className="app-toolbar-row sim-inline-row sim-inline-row-gap-md">
@@ -287,7 +264,7 @@ export default function SimulationPage(props) {
           <div>
             <div style={{ fontWeight: 700 }}>자동매수 예약 (시뮬레이션)</div>
             <div style={{ fontSize: 12, color: "#64748b" }}>
-              리플레이 날짜 진행 시 규칙 조건에 맞으면 자동으로 시장가 매수합니다.
+              실시간 기준일에 맞춰 규칙 조건에 따라 자동으로 시장가 매수합니다.
             </div>
           </div>
           <button type="button" className="sim-order-mini-btn" onClick={loadAutoBuyRules} disabled={autoBuyLoading}>
