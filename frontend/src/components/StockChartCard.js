@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createChart } from "lightweight-charts";
 import axios from "axios";
 
@@ -25,6 +25,57 @@ function toRelativeSeries(rows) {
   }));
 }
 
+function toPeriodStart(time, period) {
+  const d = new Date(`${time}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return time;
+  if (period === "DAY") return time;
+  if (period === "WEEK") {
+    const day = d.getDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    d.setDate(d.getDate() + diff);
+    return d.toISOString().slice(0, 10);
+  }
+  if (period === "MONTH") {
+    d.setDate(1);
+    return d.toISOString().slice(0, 10);
+  }
+  if (period === "YEAR") {
+    d.setMonth(0, 1);
+    return d.toISOString().slice(0, 10);
+  }
+  return time;
+}
+
+function aggregateCandles(rows, period) {
+  const normalized = normalizeCandles(rows);
+  if (period === "DAY") return normalized;
+  const grouped = new Map();
+  for (const c of normalized) {
+    const key = toPeriodStart(c.time, period);
+    const prev = grouped.get(key);
+    if (!prev) {
+      grouped.set(key, { time: key, open: c.open, high: c.high, low: c.low, close: c.close });
+      continue;
+    }
+    prev.high = Math.max(prev.high, c.high);
+    prev.low = Math.min(prev.low, c.low);
+    prev.close = c.close;
+  }
+  return Array.from(grouped.values()).sort((a, b) => String(a.time).localeCompare(String(b.time)));
+}
+
+function formatKoreanDate(time) {
+  if (!time) return "-";
+  const d = new Date(`${time}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return String(time);
+  return d.toLocaleDateString("ko-KR", { year: "numeric", month: "2-digit", day: "2-digit" });
+}
+
+function fmtPrice(v) {
+  if (!Number.isFinite(Number(v))) return "-";
+  return new Intl.NumberFormat("ko-KR").format(Math.round(Number(v)));
+}
+
 export default function StockChartCard({
   apiBaseUrl,
   code,
@@ -42,8 +93,20 @@ export default function StockChartCard({
   const chartRef = useRef(null);
   const mainSeriesRef = useRef(null);
   const compareSeriesRef = useRef(null);
+  const mainRowsRef = useRef([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [period, setPeriod] = useState("DAY");
+  const [hoverInfo, setHoverInfo] = useState(null);
+
+  const applyMainSeriesData = useCallback((rows) => {
+    if (!mainSeriesRef.current) return;
+    if (compareCode) {
+      mainSeriesRef.current.setData(toRelativeSeries(rows));
+      return;
+    }
+    mainSeriesRef.current.setData(aggregateCandles(rows, period));
+  }, [compareCode, period]);
 
   useEffect(() => {
     if (!wrapRef.current) return;
@@ -81,6 +144,32 @@ export default function StockChartCard({
     mainSeriesRef.current = mainSeries;
     compareSeriesRef.current = compareSeries;
 
+    chart.subscribeCrosshairMove((param) => {
+      if (!param?.time || !mainSeriesRef.current) {
+        setHoverInfo(null);
+        return;
+      }
+      const point = param.seriesData.get(mainSeriesRef.current);
+      if (!point || compareCode) {
+        setHoverInfo(null);
+        return;
+      }
+      const time = typeof param.time === "string"
+        ? param.time
+        : `${param.time.year}-${String(param.time.month).padStart(2, "0")}-${String(param.time.day).padStart(2, "0")}`;
+      if (![point.open, point.high, point.low, point.close].every((x) => Number.isFinite(Number(x)))) {
+        setHoverInfo(null);
+        return;
+      }
+      setHoverInfo({
+        time,
+        open: Number(point.open),
+        high: Number(point.high),
+        low: Number(point.low),
+        close: Number(point.close),
+      });
+    });
+
     const onResize = () => {
       if (!wrapRef.current || !chartRef.current) return;
       chartRef.current.applyOptions({ width: wrapRef.current.clientWidth });
@@ -111,6 +200,7 @@ export default function StockChartCard({
         if (compareCode) {
           const mainRel = toRelativeSeries(mainRes?.data);
           const compareRel = toRelativeSeries(compareRes?.data);
+          mainRowsRef.current = normalizeCandles(mainRes?.data);
           if (!mainRel.length) {
             setError("비교용 차트 데이터가 없습니다.");
             mainSeriesRef.current.setData([]);
@@ -125,14 +215,16 @@ export default function StockChartCard({
           onLatestPriceChange?.(last ? { price: last.close, time: last.time } : null);
         } else {
           const rows = normalizeCandles(mainRes?.data);
+          mainRowsRef.current = rows;
           if (!rows.length) {
             setError("차트 데이터가 없습니다.");
             mainSeriesRef.current.setData([]);
             onLatestPriceChange?.(null);
             return;
           }
-          mainSeriesRef.current.setData(rows);
-          const last = rows[rows.length - 1];
+          const shown = aggregateCandles(rows, period);
+          mainSeriesRef.current.setData(shown);
+          const last = shown[shown.length - 1];
           onLatestPriceChange?.({ price: last.close, time: last.time });
         }
 
@@ -149,7 +241,58 @@ export default function StockChartCard({
     return () => {
       cancelled = true;
     };
-  }, [apiBaseUrl, code, months, endDate, onLatestPriceChange, compareCode]);
+  }, [apiBaseUrl, code, months, endDate, onLatestPriceChange, compareCode, period]);
+
+  useEffect(() => {
+    if (compareCode) return;
+    const rows = mainRowsRef.current || [];
+    if (!rows.length) return;
+    applyMainSeriesData(rows);
+    chartRef.current?.timeScale().fitContent();
+  }, [period, compareCode, applyMainSeriesData]);
+
+  useEffect(() => {
+    if (!apiBaseUrl || !code || endDate) return undefined;
+    let cancelled = false;
+
+    const updateSeriesWithRealtime = async () => {
+      try {
+        const res = await axios.get(`${apiBaseUrl}/api/stock/quote/${code}`);
+        if (cancelled) return;
+        const price = Number(res?.data?.price);
+        if (!Number.isFinite(price) || price <= 0) return;
+
+        const rows = Array.isArray(mainRowsRef.current) ? [...mainRowsRef.current] : [];
+        if (!rows.length) return;
+        const last = rows[rows.length - 1];
+        const updated = {
+          ...last,
+          close: price,
+          high: Math.max(Number(last.high || price), price),
+          low: Math.min(Number(last.low || price), price),
+        };
+        rows[rows.length - 1] = updated;
+        mainRowsRef.current = rows;
+
+        if (compareCode) {
+          const rel = toRelativeSeries(rows);
+          mainSeriesRef.current?.setData(rel);
+        } else {
+          applyMainSeriesData(rows);
+        }
+        onLatestPriceChange?.({ price, time: updated.time });
+      } catch (_) {
+        // Ignore intermittent quote failures.
+      }
+    };
+
+    const timer = window.setInterval(updateSeriesWithRealtime, 2000);
+    updateSeriesWithRealtime();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [apiBaseUrl, code, endDate, compareCode, onLatestPriceChange, applyMainSeriesData]);
 
   return (
     <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", padding: 12 }}>
@@ -167,10 +310,45 @@ export default function StockChartCard({
           {headerActions}
         </div>
       )}
+      {!compareCode && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 12, color: "#334155", display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <span>날짜: <strong>{formatKoreanDate(hoverInfo?.time)}</strong></span>
+            <span>시가: <strong>{fmtPrice(hoverInfo?.open)}</strong></span>
+            <span>고가: <strong>{fmtPrice(hoverInfo?.high)}</strong></span>
+            <span>저가: <strong>{fmtPrice(hoverInfo?.low)}</strong></span>
+            <span>종가: <strong>{fmtPrice(hoverInfo?.close)}</strong></span>
+          </div>
+          <div style={{ display: "inline-flex", border: "1px solid #dbe2ea", borderRadius: 999, overflow: "hidden" }}>
+            {[
+              { key: "DAY", label: "일" },
+              { key: "WEEK", label: "주" },
+              { key: "MONTH", label: "월" },
+              { key: "YEAR", label: "년" },
+            ].map((x) => (
+              <button
+                key={x.key}
+                type="button"
+                onClick={() => setPeriod(x.key)}
+                style={{
+                  border: "none",
+                  padding: "4px 10px",
+                  background: period === x.key ? "#0f172a" : "#fff",
+                  color: period === x.key ? "#fff" : "#334155",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: 700,
+                }}
+              >
+                {x.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {loading && <div style={{ marginBottom: 8, color: "#64748b", fontSize: 13 }}>불러오는 중...</div>}
       {error && <div style={{ marginBottom: 8, color: "#dc2626", fontSize: 13 }}>{error}</div>}
       <div ref={wrapRef} style={{ minHeight: height, cursor: "crosshair" }} />
     </div>
   );
 }
-

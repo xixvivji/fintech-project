@@ -181,6 +181,54 @@ public class TradingService {
                 .toList();
     }
 
+    @Transactional(readOnly = true)
+    public TradingOrderDto getOrder(Long userId, Long orderId) {
+        validateUser(userId);
+        if (orderId == null || orderId <= 0) {
+            throw new IllegalArgumentException("orderId is required.");
+        }
+        BrokerOrderEntity row = brokerOrderRepository.findByIdAndUserId(orderId, userId)
+                .orElseThrow(() -> new IllegalArgumentException("Order not found."));
+        return toOrderDto(row);
+    }
+
+    @Transactional
+    public List<TradingOrderDto> syncRecentOrders(Long userId) {
+        validateUser(userId);
+        BrokerAccountLinkEntity link = getRequiredAccountLink(userId);
+
+        List<String> syncingStatuses = List.of("CREATED", "ACCEPTED", "PARTIAL", "PENDING");
+        List<BrokerOrderEntity> targets = brokerOrderRepository.findByUserIdAndStatusInOrderByCreatedAtDesc(userId, syncingStatuses);
+        if (targets.isEmpty()) {
+            return getOrders(userId);
+        }
+
+        for (BrokerOrderEntity order : targets) {
+            syncSingleOrder(link, order);
+        }
+        return getOrders(userId);
+    }
+
+    @Transactional
+    public TradingOrderDto syncOrder(Long userId, Long orderId) {
+        validateUser(userId);
+        BrokerAccountLinkEntity link = getRequiredAccountLink(userId);
+        BrokerOrderEntity order = brokerOrderRepository.findByIdAndUserId(orderId, userId)
+                .orElseThrow(() -> new IllegalArgumentException("Order not found."));
+        syncSingleOrder(link, order);
+        return toOrderDto(order);
+    }
+
+    @Transactional
+    public TradingRealtimeSnapshotDto getRealtimeSnapshot(Long userId) {
+        validateUser(userId);
+        syncRecentOrders(userId);
+        TradingPortfolioDto portfolio = getPortfolio(userId);
+        List<TradingOrderDto> orders = getOrders(userId);
+        List<TradingExecutionDto> executions = getExecutions(userId);
+        return new TradingRealtimeSnapshotDto(portfolio, orders, executions, System.currentTimeMillis());
+    }
+
     private void fillOrderInMock(BrokerOrderEntity order) {
         double price = stockService.getClosePriceOnOrBefore(order.getCode(), LocalDate.now());
         int qty = order.getQuantity();
@@ -203,6 +251,52 @@ public class TradingService {
         brokerExecutionRepository.save(execution);
 
         upsertPositionSnapshot(order.getUserId(), order.getCode(), order.getSide(), qty, price);
+    }
+
+    private void syncSingleOrder(BrokerAccountLinkEntity link, BrokerOrderEntity order) {
+        if (order.getBrokerOrderId() == null || order.getBrokerOrderId().isBlank()) {
+            return;
+        }
+        BrokerOrderStatusResult result = brokerClient.getOrderStatus(link, order);
+        if (result == null) return;
+
+        if (result.getStatus() != null && !result.getStatus().isBlank()) {
+            order.setStatus(result.getStatus().trim().toUpperCase());
+        }
+        order.setFilledQuantity(Math.max(order.getFilledQuantity(), result.getFilledQuantity()));
+        if (result.getAvgFilledPrice() != null && result.getAvgFilledPrice() > 0) {
+            order.setAvgFilledPrice(round2(result.getAvgFilledPrice()));
+        }
+        if (result.getMessage() != null && !result.getMessage().isBlank()) {
+            order.setErrorMessage(result.getMessage().trim());
+        }
+        order.setUpdatedAt(System.currentTimeMillis());
+        brokerOrderRepository.save(order);
+
+        if (result.getExecutions() == null || result.getExecutions().isEmpty()) {
+            return;
+        }
+        for (BrokerExecutionFill fill : result.getExecutions()) {
+            if (fill == null || fill.getQuantity() <= 0) continue;
+            String executionId = fill.getBrokerExecutionId();
+            if (executionId != null && !executionId.isBlank() && brokerExecutionRepository.existsByBrokerExecutionId(executionId)) {
+                continue;
+            }
+            BrokerExecutionEntity row = new BrokerExecutionEntity();
+            row.setOrderId(order.getId());
+            row.setUserId(order.getUserId());
+            row.setBrokerExecutionId((executionId == null || executionId.isBlank()) ? "BROKER-EXE-" + UUID.randomUUID() : executionId);
+            row.setCode(order.getCode());
+            row.setSide(order.getSide());
+            row.setQuantity(fill.getQuantity());
+            row.setPrice(round2(fill.getPrice()));
+            row.setExecutedAt(fill.getExecutedAt() > 0 ? fill.getExecutedAt() : System.currentTimeMillis());
+            brokerExecutionRepository.save(row);
+
+            if (brokerProperties.isMockEnabled()) {
+                upsertPositionSnapshot(order.getUserId(), order.getCode(), order.getSide(), fill.getQuantity(), fill.getPrice());
+            }
+        }
     }
 
     private void upsertPositionSnapshot(Long userId, String code, String side, int qty, double price) {

@@ -267,11 +267,13 @@ export default function App() {
       loadLeagueState();
       loadPortfolio();
       if (path === "/sim") {
+        loadPendingOrders();
+        loadExecutions();
         if (simOrderTab === "rankings") loadRankings();
       }
-    }, 10000);
+    }, 2000);
     return () => window.clearInterval(id);
-  }, [authToken, path, simOrderTab, loadLeagueState, loadPortfolio, loadRankings]);
+  }, [authToken, path, simOrderTab, loadLeagueState, loadPortfolio, loadPendingOrders, loadExecutions, loadRankings]);
 
   const handleLogin = useCallback(async () => {
     if (!loginName.trim() || !loginPassword.trim()) {

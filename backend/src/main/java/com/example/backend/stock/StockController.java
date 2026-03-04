@@ -37,6 +37,16 @@ public class StockController {
         return stockService.getTopMovers(date, limit);
     }
 
+    @GetMapping("/quote/{code}")
+    public RealtimeQuoteDto getRealtimeQuote(@PathVariable String code) {
+        return stockService.getRealtimeQuote(code);
+    }
+
+    @GetMapping("/orderbook/{code}")
+    public OrderBookDto getOrderBook(@PathVariable String code) {
+        return stockService.getOrderBook(code);
+    }
+
     @PostMapping("/backfill")
     public StockBackfillResponseDto backfill(@RequestBody StockBackfillRequestDto request) {
         if (request == null) {

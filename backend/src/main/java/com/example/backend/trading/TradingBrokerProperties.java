@@ -11,6 +11,7 @@ public class TradingBrokerProperties {
     private String baseUrl = "";
     private String accountSnapshotPath = "/api/v1/accounts/{accountNo}/snapshot";
     private String orderPath = "/api/v1/orders";
+    private String orderStatusPath = "/api/v1/orders/{brokerOrderId}";
     private String appKey = "";
     private String appSecret = "";
     private String authHeaderName = "Authorization";
@@ -56,6 +57,14 @@ public class TradingBrokerProperties {
 
     public void setOrderPath(String orderPath) {
         this.orderPath = orderPath;
+    }
+
+    public String getOrderStatusPath() {
+        return orderStatusPath;
+    }
+
+    public void setOrderStatusPath(String orderStatusPath) {
+        this.orderStatusPath = orderStatusPath;
     }
 
     public String getAppKey() {

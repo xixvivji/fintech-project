@@ -64,6 +64,9 @@ export default function SimulationPage(props) {
   const [autoBuyMessage, setAutoBuyMessage] = useState("");
   const [autoBuyRules, setAutoBuyRules] = useState([]);
   const [editingAutoBuyRuleId, setEditingAutoBuyRuleId] = useState(null);
+  const [orderbook, setOrderbook] = useState(null);
+  const [orderbookLoading, setOrderbookLoading] = useState(false);
+  const [orderbookError, setOrderbookError] = useState("");
   const [autoBuyForm, setAutoBuyForm] = useState({
     name: "",
     code: tradeCode || "005930",
@@ -105,6 +108,33 @@ export default function SimulationPage(props) {
     if (!tradeCode) return;
     setAutoBuyForm((prev) => (prev.code ? prev : { ...prev, code: tradeCode }));
   }, [tradeCode]);
+
+  useEffect(() => {
+    if (!tradeCode || !apiBaseUrl) return undefined;
+    let cancelled = false;
+
+    const loadOrderbook = async (first = false) => {
+      if (first) setOrderbookLoading(true);
+      try {
+        const res = await axios.get(`${apiBaseUrl}/api/stock/orderbook/${tradeCode}`);
+        if (cancelled) return;
+        setOrderbook(res.data || null);
+        setOrderbookError("");
+      } catch (err) {
+        if (cancelled) return;
+        setOrderbookError(err?.response?.data?.message || err?.message || "호가 정보를 불러오지 못했습니다.");
+      } finally {
+        if (first && !cancelled) setOrderbookLoading(false);
+      }
+    };
+
+    loadOrderbook(true);
+    const timer = window.setInterval(() => loadOrderbook(false), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [apiBaseUrl, tradeCode]);
 
   const saveAutoBuyRule = async () => {
     try {
@@ -417,6 +447,48 @@ export default function SimulationPage(props) {
             height={220}
             onLatestPriceChange={setSimSelectedPrice}
           />
+
+          <div className="app-card" style={{ marginTop: 10 }}>
+            <div className="app-toolbar-row" style={{ justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+              <div style={{ fontWeight: 700 }}>호가창 / 체결강도</div>
+              {orderbook?.time ? <div style={{ fontSize: 12, color: "#64748b" }}>업데이트: {orderbook.time}</div> : null}
+            </div>
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 8, fontSize: 13 }}>
+              <span>현재가: <strong>{orderbook?.currentPrice ? `${fmt(orderbook.currentPrice)}원` : "-"}</strong></span>
+              <span>총 매도잔량: <strong>{orderbook?.totalAskQty != null ? fmt(orderbook.totalAskQty) : "-"}</strong></span>
+              <span>총 매수잔량: <strong>{orderbook?.totalBidQty != null ? fmt(orderbook.totalBidQty) : "-"}</strong></span>
+              <span>체결강도: <strong>{orderbook?.executionStrength != null ? `${Number(orderbook.executionStrength).toFixed(2)}%` : "-"}</strong></span>
+            </div>
+            {orderbookLoading && <div style={{ marginTop: 8, color: "#64748b" }}>호가 불러오는 중...</div>}
+            {orderbookError && <div style={{ marginTop: 8, color: "#dc2626", fontSize: 12 }}>{orderbookError}</div>}
+            <TableWrap>
+              <table className="sim-order-table" style={{ marginTop: 10 }}>
+                <thead>
+                  <tr>
+                    <th className="num">매도잔량</th>
+                    <th className="num">매도호가</th>
+                    <th className="num">매수호가</th>
+                    <th className="num">매수잔량</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(orderbook?.levels || []).map((lv) => (
+                    <tr key={`ob-${lv.level}`}>
+                      <td className="num down">{lv.askQty != null ? fmt(lv.askQty) : "-"}</td>
+                      <td className="num down">{lv.askPrice != null ? fmt(lv.askPrice) : "-"}</td>
+                      <td className="num up">{lv.bidPrice != null ? fmt(lv.bidPrice) : "-"}</td>
+                      <td className="num up">{lv.bidQty != null ? fmt(lv.bidQty) : "-"}</td>
+                    </tr>
+                  ))}
+                  {(!orderbook?.levels || orderbook.levels.length === 0) && (
+                    <tr>
+                      <td colSpan={4} style={{ textAlign: "center", color: "#64748b" }}>호가 데이터가 없습니다.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </TableWrap>
+          </div>
         </div>
       )}
 

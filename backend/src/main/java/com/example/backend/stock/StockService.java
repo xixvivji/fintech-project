@@ -45,6 +45,18 @@ public class StockService {
     @Value("${kis.tr-id}")
     private String trId;
 
+    @Value("${kis.tr-id-quote:FHKST01010100}")
+    private String quoteTrId;
+
+    @Value("${kis.tr-id-orderbook:FHKST01010200}")
+    private String orderbookTrId;
+
+    @Value("${kis.market-div-codes:J,Q}")
+    private String marketDivCodes;
+
+    @Value("${stock.db-cache-cutoff-date:2026-02-28}")
+    private String dbCacheCutoffDateRaw;
+
     private String accessToken = "";
     private long tokenExpiresAtMs = 0L;
     private final Object kisRequestLock = new Object();
@@ -210,6 +222,153 @@ public class StockService {
                 });
     }
 
+    public RealtimeQuoteDto getRealtimeQuote(String stockCode) {
+        String normalizedCode = normalizeCode(stockCode);
+        ensureAccessToken();
+
+        RestTemplate restTemplate = new RestTemplate();
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("authorization", "Bearer " + this.accessToken);
+        headers.set("appkey", appKey.trim());
+        headers.set("appsecret", appSecret.trim());
+        headers.set("tr_id", quoteTrId == null || quoteTrId.isBlank() ? "FHKST01010100" : quoteTrId.trim());
+        HttpEntity<String> entity = new HttpEntity<>(headers);
+
+        Exception lastError = null;
+        for (String marketDiv : parseMarketDivCodes()) {
+            String url = urlBase + "/uapi/domestic-stock/v1/quotations/inquire-price"
+                    + "?fid_cond_mrkt_div_code=" + marketDiv
+                    + "&fid_input_iscd=" + normalizedCode;
+            try {
+                ResponseEntity<Map> res = requestChartWithRetry(restTemplate, url, entity);
+                Map<String, Object> body = res.getBody();
+                if (body == null) continue;
+                Object outputObj = body.get("output");
+                if (!(outputObj instanceof Map<?, ?> output)) continue;
+
+                double price = parseDoubleOrNull(String.valueOf(output.get("stck_prpr"))) == null
+                        ? 0
+                        : parseDoubleOrNull(String.valueOf(output.get("stck_prpr")));
+                if (price <= 0) {
+                    Double fallback = parseDoubleOrNull(String.valueOf(output.get("stck_clpr")));
+                    if (fallback != null) price = fallback;
+                }
+                if (price <= 0) continue;
+
+                Double open = parseDoubleOrNull(String.valueOf(output.get("stck_oprc")));
+                Double high = parseDoubleOrNull(String.valueOf(output.get("stck_hgpr")));
+                Double low = parseDoubleOrNull(String.valueOf(output.get("stck_lwpr")));
+                Double change = parseDoubleOrNull(String.valueOf(output.get("prdy_vrss")));
+                Double changeRate = parseDoubleOrNull(String.valueOf(output.get("prdy_ctrt")));
+                Object rawTime = output.containsKey("stck_cntg_hour") ? output.get("stck_cntg_hour") : "";
+                String time = String.valueOf(rawTime);
+                return new RealtimeQuoteDto(
+                        normalizedCode,
+                        time == null ? "" : time,
+                        round2(price),
+                        open == null ? null : round2(open),
+                        high == null ? null : round2(high),
+                        low == null ? null : round2(low),
+                        change == null ? null : round2(change),
+                        changeRate == null ? null : round2(changeRate)
+                );
+            } catch (Exception e) {
+                lastError = e;
+            }
+        }
+
+        // Fallback: return latest close price if intraday quote is unavailable.
+        double lastClose = getLatestClosePrice(normalizedCode);
+        if (lastClose > 0) {
+            return new RealtimeQuoteDto(normalizedCode, "", round2(lastClose), null, null, null, null, null);
+        }
+        throw new IllegalStateException("KIS realtime quote request failed for " + normalizedCode + (lastError == null ? "" : ": " + lastError.getMessage()));
+    }
+
+    public OrderBookDto getOrderBook(String stockCode) {
+        String normalizedCode = normalizeCode(stockCode);
+        ensureAccessToken();
+
+        RestTemplate restTemplate = new RestTemplate();
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("authorization", "Bearer " + this.accessToken);
+        headers.set("appkey", appKey.trim());
+        headers.set("appsecret", appSecret.trim());
+        headers.set("tr_id", orderbookTrId == null || orderbookTrId.isBlank() ? "FHKST01010200" : orderbookTrId.trim());
+        HttpEntity<String> entity = new HttpEntity<>(headers);
+
+        Exception lastError = null;
+        for (String marketDiv : parseMarketDivCodes()) {
+            String url = urlBase + "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+                    + "?fid_cond_mrkt_div_code=" + marketDiv
+                    + "&fid_input_iscd=" + normalizedCode;
+            try {
+                ResponseEntity<Map> res = requestChartWithRetry(restTemplate, url, entity);
+                Map<String, Object> body = res.getBody();
+                if (body == null) continue;
+                Object outputObj = body.get("output");
+                if (!(outputObj instanceof Map<?, ?> output)) continue;
+
+                List<OrderBookLevelDto> levels = new ArrayList<>();
+                for (int i = 1; i <= 10; i++) {
+                    Double askPrice = parseDoubleOrNull(String.valueOf(output.get("askp" + i)));
+                    Long askQty = parseLongOrNull(String.valueOf(output.get("askp_rsqn" + i)));
+                    Double bidPrice = parseDoubleOrNull(String.valueOf(output.get("bidp" + i)));
+                    Long bidQty = parseLongOrNull(String.valueOf(output.get("bidp_rsqn" + i)));
+                    if (askPrice == null && bidPrice == null) continue;
+                    levels.add(new OrderBookLevelDto(
+                            i,
+                            askPrice == null ? null : round2(askPrice),
+                            askQty,
+                            bidPrice == null ? null : round2(bidPrice),
+                            bidQty
+                    ));
+                }
+
+                Double currentPrice = parseDoubleOrNull(String.valueOf(output.get("stck_prpr")));
+                if (currentPrice == null) {
+                    currentPrice = parseDoubleOrNull(String.valueOf(output.get("antc_cnpr")));
+                }
+                Long totalAsk = parseLongOrNull(String.valueOf(output.get("total_askp_rsqn")));
+                Long totalBid = parseLongOrNull(String.valueOf(output.get("total_bidp_rsqn")));
+                Double strength = null;
+                if (totalAsk != null && totalAsk > 0 && totalBid != null) {
+                    strength = round2((double) totalBid / totalAsk * 100.0);
+                }
+                Object rawTime = output.containsKey("aspr_acpt_hour") ? output.get("aspr_acpt_hour") : "";
+                String time = String.valueOf(rawTime);
+                if (time == null || "null".equalsIgnoreCase(time)) {
+                    time = "";
+                }
+
+                return new OrderBookDto(
+                        normalizedCode,
+                        time,
+                        currentPrice == null ? null : round2(currentPrice),
+                        totalAsk,
+                        totalBid,
+                        strength,
+                        levels
+                );
+            } catch (Exception e) {
+                lastError = e;
+            }
+        }
+
+        // Fallback with empty levels when orderbook endpoint is temporarily unavailable.
+        double fallbackPrice = 0;
+        try {
+            fallbackPrice = getLatestClosePrice(normalizedCode);
+        } catch (Exception ignored) {
+        }
+        if (fallbackPrice > 0) {
+            return new OrderBookDto(normalizedCode, "", round2(fallbackPrice), null, null, null, List.of());
+        }
+        throw new IllegalStateException("KIS orderbook request failed for " + normalizedCode + (lastError == null ? "" : ": " + lastError.getMessage()));
+    }
+
     public double getClosePriceOnOrBefore(String stockCode, LocalDate targetDate) {
         if (targetDate == null) {
             throw new IllegalArgumentException("targetDate is required.");
@@ -238,11 +397,15 @@ public class StockService {
     public void saveDailyChartToDb(String stockCode, List<ChartDataDto> chartData) {
         if (chartData == null || chartData.isEmpty()) return;
         String normalizedCode = normalizeCode(stockCode);
+        LocalDate cutoffDate = getDbCacheCutoffDate();
 
         LocalDate minDate = null;
         LocalDate maxDate = null;
         for (ChartDataDto dto : chartData) {
             LocalDate date = LocalDate.parse(dto.getTime());
+            if (date.isAfter(cutoffDate)) {
+                continue;
+            }
             if (minDate == null || date.isBefore(minDate)) minDate = date;
             if (maxDate == null || date.isAfter(maxDate)) maxDate = date;
         }
@@ -256,6 +419,9 @@ public class StockService {
         List<DailyPriceEntity> toSave = new ArrayList<>();
         for (ChartDataDto dto : chartData) {
             LocalDate date = LocalDate.parse(dto.getTime());
+            if (date.isAfter(cutoffDate)) {
+                continue;
+            }
             DailyPriceEntity row = existingByDate.getOrDefault(date, new DailyPriceEntity());
             row.setCode(normalizedCode);
             row.setTradeDate(date);
@@ -350,8 +516,11 @@ public class StockService {
             LocalDate last = LocalDate.parse(rows.get(rows.size() - 1).getTime());
 
             // Allow a few days tolerance for weekends/holidays on both ends.
+            // For near-realtime windows, tighten end coverage so missing recent sessions trigger KIS fallback.
+            LocalDate today = LocalDate.now();
+            boolean isRecentWindow = !endDate.isBefore(today.minusDays(14));
             LocalDate allowedStart = startDate.plusDays(7);
-            LocalDate allowedEnd = endDate.minusDays(7);
+            LocalDate allowedEnd = isRecentWindow ? endDate.minusDays(2) : endDate.minusDays(7);
 
             boolean startCovered = !first.isAfter(allowedStart);
             boolean endCovered = !last.isBefore(allowedEnd);
@@ -459,31 +628,29 @@ public class StockService {
             String startDate,
             String endDate
     ) {
-        String url = urlBase + "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
-                + "?fid_cond_mrkt_div_code=J&fid_input_iscd=" + stockCode
-                + "&fid_input_date_1=" + startDate
-                + "&fid_input_date_2=" + endDate
-                + "&fid_period_div_code=D&fid_org_adj_prc=0";
-
         HttpEntity<String> entity = new HttpEntity<>(headers);
-        ResponseEntity<Map> response = requestChartWithRetry(restTemplate, url, entity);
-
-        Map<String, Object> responseBody = response.getBody();
-        if (responseBody == null) {
-            throw new IllegalStateException("KIS chart response body is empty.");
-        }
-
-        Object outputObj = responseBody.get("output2");
-        if (!(outputObj instanceof List<?>)) {
-            String msg = "KIS chart response output2 is missing";
-            Object msg1 = responseBody.get("msg1");
-            if (msg1 != null) {
-                msg += " (" + msg1 + ")";
+        Exception lastError = null;
+        for (String marketDiv : parseMarketDivCodes()) {
+            String url = urlBase + "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+                    + "?fid_cond_mrkt_div_code=" + marketDiv + "&fid_input_iscd=" + stockCode
+                    + "&fid_input_date_1=" + startDate
+                    + "&fid_input_date_2=" + endDate
+                    + "&fid_period_div_code=D&fid_org_adj_prc=0";
+            try {
+                ResponseEntity<Map> response = requestChartWithRetry(restTemplate, url, entity);
+                Map<String, Object> responseBody = response.getBody();
+                if (responseBody == null) {
+                    continue;
+                }
+                Object outputObj = responseBody.get("output2");
+                if (outputObj instanceof List<?>) {
+                    return (List<Map<String, String>>) outputObj;
+                }
+            } catch (Exception e) {
+                lastError = e;
             }
-            throw new IllegalStateException(msg);
         }
-
-        return (List<Map<String, String>>) outputObj;
+        throw new IllegalStateException("KIS chart response output2 is missing" + (lastError == null ? "" : ": " + lastError.getMessage()));
     }
 
     private ResponseEntity<Map> requestChartWithRetry(RestTemplate restTemplate, String url, HttpEntity<String> entity) {
@@ -571,6 +738,30 @@ public class StockService {
         return stockCode.trim();
     }
 
+    private List<String> parseMarketDivCodes() {
+        List<String> codes = new ArrayList<>();
+        if (marketDivCodes != null && !marketDivCodes.isBlank()) {
+            for (String part : marketDivCodes.split(",")) {
+                String v = part == null ? "" : part.trim().toUpperCase();
+                if (!v.isBlank() && !codes.contains(v)) {
+                    codes.add(v);
+                }
+            }
+        }
+        if (codes.isEmpty()) {
+            codes.add("J");
+        }
+        return codes;
+    }
+
+    private LocalDate getDbCacheCutoffDate() {
+        try {
+            return LocalDate.parse(dbCacheCutoffDateRaw == null ? "2026-02-28" : dbCacheCutoffDateRaw.trim());
+        } catch (Exception e) {
+            return LocalDate.of(2026, 2, 28);
+        }
+    }
+
     private List<ChartDataDto> getCachedChart(String cacheKey) {
         CacheEntry entry = chartCache.get(cacheKey);
         long now = System.currentTimeMillis();
@@ -641,5 +832,3 @@ public class StockService {
         }
     }
 }
-
-

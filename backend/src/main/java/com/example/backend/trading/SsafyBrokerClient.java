@@ -120,6 +120,95 @@ public class SsafyBrokerClient implements BrokerClient {
         }
     }
 
+    @Override
+    public BrokerOrderStatusResult getOrderStatus(BrokerAccountLinkEntity accountLink, BrokerOrderEntity order) {
+        if (properties.isMockEnabled()) {
+            List<BrokerExecutionFill> executions = new ArrayList<>();
+            if ("FILLED".equalsIgnoreCase(order.getStatus())) {
+                executions.add(new BrokerExecutionFill(
+                        "MOCK-EXE-" + order.getClientOrderId(),
+                        order.getFilledQuantity(),
+                        order.getAvgFilledPrice() == null ? 0 : order.getAvgFilledPrice(),
+                        System.currentTimeMillis()
+                ));
+            }
+            return new BrokerOrderStatusResult(
+                    order.getStatus(),
+                    order.getFilledQuantity(),
+                    order.getAvgFilledPrice(),
+                    "Mock order status",
+                    executions
+            );
+        }
+
+        validateLiveConfig();
+        String brokerOrderId = order.getBrokerOrderId();
+        if (brokerOrderId == null || brokerOrderId.isBlank()) {
+            throw new IllegalArgumentException("brokerOrderId is required.");
+        }
+
+        String url = joinUrl(
+                properties.getBaseUrl(),
+                properties.getOrderStatusPath().replace("{brokerOrderId}", brokerOrderId)
+        );
+
+        HttpHeaders headers = buildHeaders(accountLink);
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+        try {
+            ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.GET, entity, String.class);
+            JsonNode root = parseBody(response.getBody());
+            JsonNode payload = pick(root, "output", "data", "result", "order", "payload");
+
+            String status = findText(payload, "status", "orderStatus", "ord_stat", "ord_tmd");
+            if (status == null || status.isBlank()) status = order.getStatus();
+
+            int filledQuantity = (int) Math.round(findDouble(payload, "filledQuantity", "filledQty", "executedQty", "tot_ccld_qty"));
+            if (filledQuantity <= 0) filledQuantity = order.getFilledQuantity();
+
+            double parsedAvgFilledPrice = findDouble(payload, "avgFilledPrice", "avgExecPrice", "avg_price", "avg_prvs");
+            Double avgFilledPrice = parsedAvgFilledPrice > 0 ? round2(parsedAvgFilledPrice) : null;
+            if (avgFilledPrice == null && order.getAvgFilledPrice() != null && order.getAvgFilledPrice() > 0) {
+                avgFilledPrice = round2(order.getAvgFilledPrice());
+            }
+
+            String message = findText(root, "message", "msg", "msg1");
+            if (message == null || message.isBlank()) message = "Broker order status synced.";
+
+            List<BrokerExecutionFill> executions = new ArrayList<>();
+            JsonNode fillsNode = pick(payload, "executions", "fills", "trades", "output1");
+            if (fillsNode != null && fillsNode.isArray()) {
+                for (JsonNode row : fillsNode) {
+                    String executionId = findText(row, "brokerExecutionId", "executionId", "fillId", "odno");
+                    int qty = (int) Math.round(findDouble(row, "quantity", "qty", "executedQty", "ccld_qty"));
+                    double price = findDouble(row, "price", "execPrice", "tradePrice", "ccld_unpr");
+                    long executedAt = findLong(row, "executedAt", "execAt", "timestamp", "ord_tmd");
+                    if (executedAt <= 0) executedAt = System.currentTimeMillis();
+                    if (qty <= 0) continue;
+                    executions.add(new BrokerExecutionFill(
+                            executionId == null || executionId.isBlank() ? "BROKER-EXE-" + UUID.randomUUID() : executionId,
+                            qty,
+                            round2(price),
+                            executedAt
+                    ));
+                }
+            } else if ("FILLED".equalsIgnoreCase(status) && filledQuantity > 0 && avgFilledPrice != null && avgFilledPrice > 0) {
+                executions.add(new BrokerExecutionFill(
+                        "BROKER-EXE-" + brokerOrderId,
+                        filledQuantity,
+                        avgFilledPrice,
+                        System.currentTimeMillis()
+                ));
+            }
+
+            return new BrokerOrderStatusResult(status.toUpperCase(), filledQuantity, avgFilledPrice, message, executions);
+        } catch (RestClientResponseException e) {
+            throw new IllegalStateException("Broker order status failed: HTTP " + e.getStatusCode() + " - " + e.getResponseBodyAsString(), e);
+        } catch (Exception e) {
+            throw new IllegalStateException("Broker order status failed: " + e.getMessage(), e);
+        }
+    }
+
     private HttpHeaders buildHeaders(BrokerAccountLinkEntity accountLink) {
         HttpHeaders headers = new HttpHeaders();
         String token = accountLink.getAccessTokenEncrypted() == null ? "" : accountLink.getAccessTokenEncrypted().trim();
@@ -191,5 +280,25 @@ public class SsafyBrokerClient implements BrokerClient {
             }
         }
         return 0;
+    }
+
+    private long findLong(JsonNode node, String... keys) {
+        if (node == null) return 0;
+        for (String key : keys) {
+            JsonNode v = node.get(key);
+            if (v == null || v.isNull()) continue;
+            if (v.isNumber()) return v.asLong();
+            String text = v.asText();
+            if (text == null || text.isBlank()) continue;
+            try {
+                return Long.parseLong(text.replaceAll("[^0-9]", ""));
+            } catch (Exception ignored) {
+            }
+        }
+        return 0;
+    }
+
+    private double round2(double value) {
+        return Math.round(value * 100.0) / 100.0;
     }
 }

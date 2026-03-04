@@ -52,9 +52,39 @@ public class TradingController {
         return tradingService.getOrders(userId);
     }
 
+    @GetMapping("/orders/{orderId}")
+    public TradingOrderDto getOrder(
+            @RequestHeader("Authorization") String authorizationHeader,
+            @PathVariable Long orderId
+    ) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
+        return tradingService.getOrder(userId, orderId);
+    }
+
+    @PostMapping("/orders/{orderId}/sync")
+    public TradingOrderDto syncOrder(
+            @RequestHeader("Authorization") String authorizationHeader,
+            @PathVariable Long orderId
+    ) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
+        return tradingService.syncOrder(userId, orderId);
+    }
+
+    @PostMapping("/orders/sync")
+    public List<TradingOrderDto> syncRecentOrders(@RequestHeader("Authorization") String authorizationHeader) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
+        return tradingService.syncRecentOrders(userId);
+    }
+
     @GetMapping("/executions")
     public List<TradingExecutionDto> getExecutions(@RequestHeader("Authorization") String authorizationHeader) {
         Long userId = jwtService.validateAndGetUserId(authorizationHeader);
         return tradingService.getExecutions(userId);
+    }
+
+    @GetMapping("/realtime")
+    public TradingRealtimeSnapshotDto getRealtimeSnapshot(@RequestHeader("Authorization") String authorizationHeader) {
+        Long userId = jwtService.validateAndGetUserId(authorizationHeader);
+        return tradingService.getRealtimeSnapshot(userId);
     }
 }
