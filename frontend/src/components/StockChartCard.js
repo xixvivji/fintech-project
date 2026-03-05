@@ -4,6 +4,10 @@ import axios from "axios";
 
 const MIN_HISTORY_DATE = "2015-01-01";
 const LEFT_EDGE_LOAD_THRESHOLD = 20;
+const REALTIME_POLL_MS = 3000;
+const CHART_CACHE_TTL_MS = 30 * 1000;
+const chartDataCache = new Map();
+const inflightChartRequests = new Map();
 
 function normalizeCandles(rows) {
   if (!Array.isArray(rows)) return [];
@@ -90,6 +94,36 @@ function mergeCandles(existingRows, incomingRows) {
   return Array.from(merged.values()).sort((a, b) => String(a.time).localeCompare(String(b.time)));
 }
 
+function buildChartCacheKey(apiBaseUrl, code, months, endDate) {
+  return `${apiBaseUrl}|${code}|${months}|${endDate || "today"}`;
+}
+
+async function fetchChartData(apiBaseUrl, code, months, endDate) {
+  const key = buildChartCacheKey(apiBaseUrl, code, months, endDate);
+  const now = Date.now();
+  const cached = chartDataCache.get(key);
+  if (cached && now - cached.ts < CHART_CACHE_TTL_MS) {
+    return cached.rows;
+  }
+
+  const inflight = inflightChartRequests.get(key);
+  if (inflight) return inflight;
+
+  const req = axios
+    .get(`${apiBaseUrl}/api/stock/chart/${code}`, { params: { months, endDate: endDate || undefined } })
+    .then((res) => {
+      const rows = normalizeCandles(res?.data);
+      chartDataCache.set(key, { ts: Date.now(), rows });
+      return rows;
+    })
+    .finally(() => {
+      inflightChartRequests.delete(key);
+    });
+
+  inflightChartRequests.set(key, req);
+  return req;
+}
+
 export default function StockChartCard({
   apiBaseUrl,
   code,
@@ -110,22 +144,34 @@ export default function StockChartCard({
   const mainRowsRef = useRef([]);
   const loadingMoreRef = useRef(false);
   const reachedMinHistoryRef = useRef(false);
+  const chartDisposedRef = useRef(true);
+  const periodRef = useRef("DAY");
+  const compareModeRef = useRef(Boolean(compareCode));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [period, setPeriod] = useState("DAY");
   const [hoverInfo, setHoverInfo] = useState(null);
 
+  useEffect(() => {
+    periodRef.current = period;
+  }, [period]);
+
+  useEffect(() => {
+    compareModeRef.current = Boolean(compareCode);
+  }, [compareCode]);
+
   const applyMainSeriesData = useCallback((rows) => {
     if (!mainSeriesRef.current) return;
-    if (compareCode) {
+    if (compareModeRef.current) {
       mainSeriesRef.current.setData(toRelativeSeries(rows));
       return;
     }
-    mainSeriesRef.current.setData(aggregateCandles(rows, period));
-  }, [compareCode, period]);
+    mainSeriesRef.current.setData(aggregateCandles(rows, periodRef.current));
+  }, []);
 
   useEffect(() => {
     if (!wrapRef.current) return;
+    chartDisposedRef.current = false;
     const chart = createChart(wrapRef.current, {
       width: wrapRef.current.clientWidth,
       height,
@@ -162,13 +208,14 @@ export default function StockChartCard({
     loadingMoreRef.current = false;
     reachedMinHistoryRef.current = false;
 
-    chart.subscribeCrosshairMove((param) => {
+    const onCrosshairMove = (param) => {
+      if (chartDisposedRef.current) return;
       if (!param?.time || !mainSeriesRef.current) {
         setHoverInfo(null);
         return;
       }
       const point = param.seriesData.get(mainSeriesRef.current);
-      if (!point || compareCode) {
+      if (!point || compareModeRef.current) {
         setHoverInfo(null);
         return;
       }
@@ -186,10 +233,12 @@ export default function StockChartCard({
         low: Number(point.low),
         close: Number(point.close),
       });
-    });
+    };
+    chart.subscribeCrosshairMove(onCrosshairMove);
 
     const onVisibleLogicalRangeChange = async (range) => {
-      if (compareCode) return;
+      if (chartDisposedRef.current) return;
+      if (compareModeRef.current) return;
       if (!range || loadingMoreRef.current || reachedMinHistoryRef.current) return;
       if (range.from > LEFT_EDGE_LOAD_THRESHOLD) return;
 
@@ -204,18 +253,21 @@ export default function StockChartCard({
       loadingMoreRef.current = true;
       const prevRange = chart.timeScale().getVisibleLogicalRange();
       try {
-        const res = await axios.get(`${apiBaseUrl}/api/stock/chart/${code}`, {
-          params: { months, endDate: earliest },
-        });
-        const olderRows = normalizeCandles(res?.data);
+        const olderRows = await fetchChartData(apiBaseUrl, code, months, earliest);
         if (!olderRows.length) {
           reachedMinHistoryRef.current = true;
           return;
         }
+        if (chartDisposedRef.current) return;
 
-        const prevShownLength = compareCode ? toRelativeSeries(rows).length : aggregateCandles(rows, period).length;
+        const activePeriod = periodRef.current;
+        const prevShownLength = compareModeRef.current
+          ? toRelativeSeries(rows).length
+          : aggregateCandles(rows, activePeriod).length;
         const nextRows = mergeCandles(rows, olderRows);
-        const nextShownLength = compareCode ? toRelativeSeries(nextRows).length : aggregateCandles(nextRows, period).length;
+        const nextShownLength = compareModeRef.current
+          ? toRelativeSeries(nextRows).length
+          : aggregateCandles(nextRows, activePeriod).length;
         const addedCount = Math.max(0, nextShownLength - prevShownLength);
         mainRowsRef.current = nextRows;
         applyMainSeriesData(nextRows);
@@ -234,19 +286,26 @@ export default function StockChartCard({
       } catch (_) {
         // Ignore transient load-more failures.
       } finally {
-        loadingMoreRef.current = false;
+        if (!chartDisposedRef.current) {
+          loadingMoreRef.current = false;
+        }
       }
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange);
 
     const onResize = () => {
-      if (!wrapRef.current || !chartRef.current) return;
+      if (chartDisposedRef.current || !wrapRef.current || !chartRef.current) return;
       chartRef.current.applyOptions({ width: wrapRef.current.clientWidth });
     };
     window.addEventListener("resize", onResize);
     return () => {
+      chartDisposedRef.current = true;
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange);
+      chart.unsubscribeCrosshairMove(onCrosshairMove);
       window.removeEventListener("resize", onResize);
+      chartRef.current = null;
+      mainSeriesRef.current = null;
+      compareSeriesRef.current = null;
       chart.remove();
     };
   }, [height, compareCode, apiBaseUrl, code, months, applyMainSeriesData]);
@@ -258,19 +317,17 @@ export default function StockChartCard({
       setLoading(true);
       setError("");
       try {
-        const mainReq = axios.get(`${apiBaseUrl}/api/stock/chart/${code}`, {
-          params: { months, endDate: endDate || undefined },
-        });
+        const mainReq = fetchChartData(apiBaseUrl, code, months, endDate);
         const compareReq = compareCode
-          ? axios.get(`${apiBaseUrl}/api/stock/chart/${compareCode}`, { params: { months, endDate: endDate || undefined } })
+          ? fetchChartData(apiBaseUrl, compareCode, months, endDate)
           : Promise.resolve(null);
         const [mainRes, compareRes] = await Promise.all([mainReq, compareReq]);
-        if (cancelled) return;
+        if (cancelled || chartDisposedRef.current) return;
 
         if (compareCode) {
-          const mainRel = toRelativeSeries(mainRes?.data);
-          const compareRel = toRelativeSeries(compareRes?.data);
-          mainRowsRef.current = normalizeCandles(mainRes?.data);
+          const mainRel = toRelativeSeries(mainRes);
+          const compareRel = toRelativeSeries(compareRes);
+          mainRowsRef.current = normalizeCandles(mainRes);
           if (!mainRel.length) {
             setError("비교용 차트 데이터가 없습니다.");
             mainSeriesRef.current.setData([]);
@@ -280,11 +337,10 @@ export default function StockChartCard({
           }
           mainSeriesRef.current.setData(mainRel);
           compareSeriesRef.current?.setData(compareRel);
-          const rawMain = normalizeCandles(mainRes?.data);
-          const last = rawMain[rawMain.length - 1];
+          const last = mainRes[mainRes.length - 1];
           onLatestPriceChange?.(last ? { price: last.close, time: last.time } : null);
         } else {
-          const rows = normalizeCandles(mainRes?.data);
+          const rows = normalizeCandles(mainRes);
           mainRowsRef.current = rows;
           reachedMinHistoryRef.current = rows.length > 0 && rows[0].time <= MIN_HISTORY_DATE;
           if (!rows.length) {
@@ -293,7 +349,7 @@ export default function StockChartCard({
             onLatestPriceChange?.(null);
             return;
           }
-          const shown = aggregateCandles(rows, period);
+          const shown = aggregateCandles(rows, periodRef.current);
           mainSeriesRef.current.setData(shown);
           const last = shown[shown.length - 1];
           onLatestPriceChange?.({ price: last.close, time: last.time });
@@ -312,7 +368,7 @@ export default function StockChartCard({
     return () => {
       cancelled = true;
     };
-  }, [apiBaseUrl, code, months, endDate, onLatestPriceChange, compareCode, period]);
+  }, [apiBaseUrl, code, months, endDate, onLatestPriceChange, compareCode]);
 
   useEffect(() => {
     if (compareCode) return;
@@ -327,6 +383,7 @@ export default function StockChartCard({
     let cancelled = false;
 
     const updateSeriesWithRealtime = async () => {
+      if (document.hidden) return;
       try {
         const res = await axios.get(`${apiBaseUrl}/api/stock/quote/${code}`);
         if (cancelled) return;
@@ -357,7 +414,7 @@ export default function StockChartCard({
       }
     };
 
-    const timer = window.setInterval(updateSeriesWithRealtime, 2000);
+    const timer = window.setInterval(updateSeriesWithRealtime, REALTIME_POLL_MS);
     updateSeriesWithRealtime();
     return () => {
       cancelled = true;
