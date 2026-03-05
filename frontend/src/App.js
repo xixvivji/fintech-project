@@ -264,6 +264,8 @@ export default function App() {
 
   useEffect(() => {
     if (!authToken) return;
+    const shouldPollBase = path === "/" || path === "/sim" || path === "/league" || path === "/market";
+    if (!shouldPollBase) return;
     const id = window.setInterval(() => {
       loadLeagueState();
       loadPortfolio();

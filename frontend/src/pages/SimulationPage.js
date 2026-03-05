@@ -154,12 +154,15 @@ export default function SimulationPage(props) {
     };
 
     loadOrderbook(true);
-    const timer = window.setInterval(() => loadOrderbook(false), 2000);
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      loadOrderbook(false);
+    }, 2000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [apiBaseUrl, tradeCode, tradeMessage]);
+  }, [apiBaseUrl, tradeCode]);
 
   const saveAutoBuyRule = async () => {
     try {

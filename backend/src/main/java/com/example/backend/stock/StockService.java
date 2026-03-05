@@ -30,6 +30,7 @@ public class StockService {
     private static final int MAX_CHUNK_REQUESTS = 30;
     private static final long CHART_CACHE_TTL_MS = 20_000L;
     private static final long PRICE_SERIES_CACHE_TTL_MS = 600_000L;
+    private static final long ORDERBOOK_CACHE_TTL_MS = 5_000L;
 
     private final DailyPriceRepository dailyPriceRepository;
 
@@ -64,6 +65,7 @@ public class StockService {
     private long lastKisRequestAt = 0L;
     private final ConcurrentHashMap<String, CacheEntry> chartCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, PriceSeriesCacheEntry> priceSeriesCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, OrderBookCacheEntry> orderBookCache = new ConcurrentHashMap<>();
 
     public StockService(DailyPriceRepository dailyPriceRepository) {
         this.dailyPriceRepository = dailyPriceRepository;
@@ -244,7 +246,10 @@ public class StockService {
                 ResponseEntity<Map> res = requestChartWithRetry(restTemplate, url, entity);
                 Map<String, Object> body = res.getBody();
                 if (body == null) continue;
-                Object outputObj = body.get("output");
+                Object outputObj = body.get("output1");
+                if (!(outputObj instanceof Map<?, ?>)) {
+                    outputObj = body.get("output");
+                }
                 if (!(outputObj instanceof Map<?, ?> output)) continue;
 
                 double price = parseDoubleOrNull(String.valueOf(output.get("stck_prpr"))) == null
@@ -288,6 +293,8 @@ public class StockService {
 
     public OrderBookDto getOrderBook(String stockCode) {
         String normalizedCode = normalizeCode(stockCode);
+        OrderBookDto cached = getCachedOrderBook(normalizedCode);
+        if (cached != null) return cached;
         ensureAccessToken();
 
         RestTemplate restTemplate = new RestTemplate();
@@ -331,16 +338,18 @@ public class StockService {
                 if (currentPrice == null) {
                     currentPrice = parseDoubleOrNull(String.valueOf(output.get("antc_cnpr")));
                 }
-                try {
-                    RealtimeQuoteDto quote = getRealtimeQuote(normalizedCode);
-                    if (quote != null && quote.getPrice() > 0) {
-                        currentPrice = quote.getPrice();
+                Long totalAsk = parseLongFromAny(output, "total_askp_rsqn", "total_ask_rsqn", "askp_tot_rsqn");
+                Long totalBid = parseLongFromAny(output, "total_bidp_rsqn", "total_bid_rsqn", "bidp_tot_rsqn");
+                if ((totalAsk == null || totalBid == null) && !levels.isEmpty()) {
+                    long askSum = 0L;
+                    long bidSum = 0L;
+                    for (OrderBookLevelDto lv : levels) {
+                        if (lv.getAskQty() != null) askSum += lv.getAskQty();
+                        if (lv.getBidQty() != null) bidSum += lv.getBidQty();
                     }
-                } catch (Exception ignored) {
-                    // Keep orderbook-provided current price if quote refresh fails.
+                    if (totalAsk == null && askSum > 0) totalAsk = askSum;
+                    if (totalBid == null && bidSum > 0) totalBid = bidSum;
                 }
-                Long totalAsk = parseLongOrNull(String.valueOf(output.get("total_askp_rsqn")));
-                Long totalBid = parseLongOrNull(String.valueOf(output.get("total_bidp_rsqn")));
                 Double strength = null;
                 if (totalAsk != null && totalAsk > 0 && totalBid != null) {
                     strength = round2((double) totalBid / totalAsk * 100.0);
@@ -351,7 +360,7 @@ public class StockService {
                     time = "";
                 }
 
-                return new OrderBookDto(
+                OrderBookDto result = new OrderBookDto(
                         normalizedCode,
                         time,
                         currentPrice == null ? null : round2(currentPrice),
@@ -360,10 +369,16 @@ public class StockService {
                         strength,
                         levels
                 );
+                putCachedOrderBook(normalizedCode, result);
+                return result;
             } catch (Exception e) {
                 lastError = e;
             }
         }
+
+        // If upstream is unstable, serve the most recent cached snapshot.
+        OrderBookDto stale = orderBookCache.get(normalizedCode) == null ? null : orderBookCache.get(normalizedCode).data;
+        if (stale != null) return stale;
 
         // Fallback with empty levels when orderbook endpoint is temporarily unavailable.
         // Keep current price aligned with chart quote (realtime first, close-price last fallback).
@@ -373,7 +388,9 @@ public class StockService {
         } catch (Exception ignored) {
         }
         if (fallbackPrice > 0) {
-            return new OrderBookDto(normalizedCode, "", round2(fallbackPrice), null, null, null, List.of());
+            OrderBookDto fallback = new OrderBookDto(normalizedCode, "", round2(fallbackPrice), null, null, null, List.of());
+            putCachedOrderBook(normalizedCode, fallback);
+            return fallback;
         }
         throw new IllegalStateException("KIS orderbook request failed for " + normalizedCode + (lastError == null ? "" : ": " + lastError.getMessage()));
     }
@@ -740,6 +757,18 @@ public class StockService {
         }
     }
 
+    private Long parseLongFromAny(Map<?, ?> source, String... keys) {
+        if (source == null || keys == null) return null;
+        for (String key : keys) {
+            if (key == null || key.isBlank()) continue;
+            Object raw = source.get(key);
+            if (raw == null) continue;
+            Long parsed = parseLongOrNull(String.valueOf(raw));
+            if (parsed != null) return parsed;
+        }
+        return null;
+    }
+
     private double round2(double value) {
         return Math.round(value * 100.0) / 100.0;
     }
@@ -836,6 +865,22 @@ public class StockService {
         );
     }
 
+    private OrderBookDto getCachedOrderBook(String stockCode) {
+        OrderBookCacheEntry entry = orderBookCache.get(stockCode);
+        long now = System.currentTimeMillis();
+        if (entry == null) return null;
+        if (entry.expiresAtMs <= now) {
+            orderBookCache.remove(stockCode);
+            return null;
+        }
+        return entry.data;
+    }
+
+    private void putCachedOrderBook(String stockCode, OrderBookDto data) {
+        long expiresAt = System.currentTimeMillis() + ORDERBOOK_CACHE_TTL_MS;
+        orderBookCache.put(stockCode, new OrderBookCacheEntry(data, expiresAt));
+    }
+
     private static class CacheEntry {
         private final List<ChartDataDto> data;
         private final long expiresAtMs;
@@ -851,6 +896,16 @@ public class StockService {
         private final long expiresAtMs;
 
         private PriceSeriesCacheEntry(List<ChartDataDto> data, long expiresAtMs) {
+            this.data = data;
+            this.expiresAtMs = expiresAtMs;
+        }
+    }
+
+    private static class OrderBookCacheEntry {
+        private final OrderBookDto data;
+        private final long expiresAtMs;
+
+        private OrderBookCacheEntry(OrderBookDto data, long expiresAtMs) {
             this.data = data;
             this.expiresAtMs = expiresAtMs;
         }

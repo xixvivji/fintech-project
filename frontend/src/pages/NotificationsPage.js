@@ -43,17 +43,28 @@ export default function NotificationsPage({ apiBaseUrl, authToken, isLoggedIn, f
   });
 
   const markRead = async (id) => {
-    await axios.post(`${apiBaseUrl}/api/notifications/${id}/read`, {}, { headers: headers(authToken) });
-    await load();
+    setRows((prev) => (prev || []).map((row) => (row.id === id ? { ...row, read: true } : row)));
+    try {
+      await axios.post(`${apiBaseUrl}/api/notifications/${id}/read`, {}, { headers: headers(authToken) });
+    } catch (err) {
+      setMessage(err?.response?.data?.message || err?.message || "읽음 처리 실패");
+      await load();
+    }
   };
   const markAllRead = async () => {
-    await axios.post(`${apiBaseUrl}/api/notifications/read-all`, {}, { headers: headers(authToken) });
-    await load();
+    setRows((prev) => (prev || []).map((row) => ({ ...row, read: true })));
+    try {
+      await axios.post(`${apiBaseUrl}/api/notifications/read-all`, {}, { headers: headers(authToken) });
+    } catch (err) {
+      setMessage(err?.response?.data?.message || err?.message || "전체 읽음 처리 실패");
+      await load();
+    }
   };
 
   const openNotificationTarget = async (n) => {
     if (!n) return;
     if (!n.read) {
+      setRows((prev) => (prev || []).map((row) => (row.id === n.id ? { ...row, read: true } : row)));
       try {
         await axios.post(`${apiBaseUrl}/api/notifications/${n.id}/read`, {}, { headers: headers(authToken) });
       } catch {}
@@ -62,7 +73,6 @@ export default function NotificationsPage({ apiBaseUrl, authToken, isLoggedIn, f
       navigateTo?.(`/challenges/${n.refId}`);
       return;
     }
-    await load();
   };
 
   return (
