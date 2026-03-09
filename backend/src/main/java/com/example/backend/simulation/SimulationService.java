@@ -608,7 +608,7 @@ public class SimulationService {
                         a.latestValuationDate == null ? leagueDate.toString() : a.latestValuationDate,
                         a.executionCount,
                         a.totalQuantity,
-                        round2(stockService.getClosePriceOnOrBefore(a.code, leagueDate))
+                        round2(stockService.getRealtimePriceOrClose(a.code, leagueDate))
                 ))
                 .toList();
     }

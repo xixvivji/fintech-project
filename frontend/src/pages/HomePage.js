@@ -5,6 +5,7 @@ const HOME_LAYOUT_KEY = "fintech_home_layout_v2";
 const AUTH_TOKEN_KEY = "fintech_access_token";
 const INITIAL_CASH = 50000000;
 const DEFAULT_WIDGET_ORDER = ["metrics", "challenges", "movers", "volume", "watchlist", "ranking"];
+const POPULAR_STOCKS_POLL_MS = 15000;
 
 function readHomeLayout() {
   try {
@@ -141,9 +142,10 @@ export default function HomePage({
 
   useEffect(() => {
     let cancelled = false;
-    async function loadPopularStocks() {
+
+    async function loadPopularStocks(silent = false) {
       if (!apiBaseUrl || !isLoggedIn) return;
-      setPopularLoading(true);
+      if (!silent) setPopularLoading(true);
       setPopularError("");
       try {
         const token = readAccessToken();
@@ -154,15 +156,21 @@ export default function HomePage({
         if (!cancelled) setPopularRows(Array.isArray(res.data) ? res.data : []);
       } catch (err) {
         if (!cancelled) {
-          setPopularError(err?.response?.data?.message || "리그 인기 종목을 불러오지 못했습니다.");
+          setPopularError(err?.response?.data?.message || "Failed to load popular stocks.");
         }
       } finally {
-        if (!cancelled) setPopularLoading(false);
+        if (!cancelled && !silent) setPopularLoading(false);
       }
     }
-    loadPopularStocks();
+
+    loadPopularStocks(false);
+    const timer = window.setInterval(() => {
+      loadPopularStocks(true);
+    }, POPULAR_STOCKS_POLL_MS);
+
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
   }, [apiBaseUrl, isLoggedIn]);
 
