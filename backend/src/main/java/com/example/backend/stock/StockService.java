@@ -33,7 +33,7 @@ public class StockService {
     private static final int MAX_CHUNK_REQUESTS = 30;
     private static final long CHART_CACHE_TTL_MS = 20_000L;
     private static final long PRICE_SERIES_CACHE_TTL_MS = 600_000L;
-    private static final long ORDERBOOK_CACHE_TTL_MS = 5_000L;
+    private static final long ORDERBOOK_CACHE_TTL_MS = 2_000L;
     private static final long ORDERBOOK_DEBUG_LOG_INTERVAL_MS = 60_000L;
 
     private final DailyPriceRepository dailyPriceRepository;
@@ -986,3 +986,4 @@ public class StockService {
         }
     }
 }
+

@@ -87,14 +87,14 @@ export default function SimulationPage(props) {
   }, [autoBuyForm.code, autoBuyForm.quantity, getStockNameByCode]);
 
   const chartTimeframeOptions = [
-    { key: "1m", label: "1분", bucketMinutes: 1 },
-    { key: "10m", label: "10분", bucketMinutes: 10 },
-    { key: "30m", label: "30분", bucketMinutes: 30 },
-    { key: "60m", label: "1시간", bucketMinutes: 60 },
-    { key: "1d", label: "일", forcedPeriod: "DAY", months: 6 },
-    { key: "1w", label: "주", forcedPeriod: "WEEK", months: 24 },
-    { key: "1mo", label: "월", forcedPeriod: "MONTH", months: 120 },
-    { key: "1y", label: "년", forcedPeriod: "YEAR", months: 120 },
+    { key: "1m", label: "1m", bucketMinutes: 1 },
+    { key: "10m", label: "10m", bucketMinutes: 10 },
+    { key: "30m", label: "30m", bucketMinutes: 30 },
+    { key: "60m", label: "1h", bucketMinutes: 60 },
+    { key: "1d", label: "D", forcedPeriod: "DAY", months: 6 },
+    { key: "1w", label: "W", forcedPeriod: "WEEK", months: 24 },
+    { key: "1mo", label: "M", forcedPeriod: "MONTH", months: 120 },
+    { key: "1y", label: "Y", forcedPeriod: "YEAR", months: 120 },
   ];
   const activeTimeframe = chartTimeframeOptions.find((x) => x.key === chartTimeframe) || chartTimeframeOptions[0];
   const isIntradayTimeframe = Boolean(activeTimeframe.bucketMinutes);
@@ -510,14 +510,14 @@ export default function SimulationPage(props) {
 
           {isIntradayTimeframe ? (
             <MinuteChartCard
-              key={`${tradeCode}-${activeTimeframe.key}`}
+              key={`${tradeCode}-intraday`}
               apiBaseUrl={apiBaseUrl}
               code={tradeCode}
               height={220}
               bucketMinutes={activeTimeframe.bucketMinutes}
               onLatestPriceChange={setSimSelectedPrice}
               title={`${getStockNameByCode(tradeCode)} (${tradeCode})`}
-              subtitle={`실시간 ${activeTimeframe.label} 캔들`}
+              subtitle={`Realtime ${activeTimeframe.label} candles`}
             />
           ) : (
             <StockChartCard
@@ -531,7 +531,7 @@ export default function SimulationPage(props) {
               height={220}
               onLatestPriceChange={setSimSelectedPrice}
               title={`${getStockNameByCode(tradeCode)} (${tradeCode})`}
-              subtitle={`${activeTimeframe.label} 기준 차트`}
+              subtitle={`${activeTimeframe.label} aggregated chart`}
             />
           )}
 
