@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from "react";
-import StockChartCard from "../components/StockChartCard";
+import React, { useEffect, useMemo, useState } from "react";
+import axios from "axios";
+import MinuteChartCard from "../components/MinuteChartCard";
 import { STOCK_OPTIONS } from "../constants/stocks";
 
 export default function MarketPage({
@@ -16,6 +17,9 @@ export default function MarketPage({
 }) {
   const [code, setCode] = useState(selectedTradeCode || "005930");
   const [latestPrice, setLatestPrice] = useState(null);
+  const [orderbook, setOrderbook] = useState(null);
+  const [orderbookLoading, setOrderbookLoading] = useState(false);
+  const [orderbookError, setOrderbookError] = useState("");
 
   const stock = useMemo(() => STOCK_OPTIONS.find((s) => s.code === code), [code]);
   const isWatch = Boolean(watchlistCodeSet?.has(code));
@@ -23,19 +27,49 @@ export default function MarketPage({
   const mockInfo = useMemo(() => {
     const seed = Number(code) % 100;
     return {
-      sector: ["반도체", "플랫폼", "자동차", "바이오", "에너지", "금융"][seed % 6],
+      sector: ["Semiconductor", "Auto", "Bio", "Display", "Energy", "Finance"][seed % 6],
       marketCap: (seed + 40) * 1_000_000_000_000,
       listedAt: `${2010 + (seed % 15)}-${String((seed % 12) + 1).padStart(2, "0")}-${String((seed % 27) + 1).padStart(2, "0")}`,
-      note: "과거 기준일과 연동되는 종목정보 예시 페이지입니다.",
+      note: "Mock profile info for the selected stock.",
     };
   }, [code]);
 
+  useEffect(() => {
+    if (!apiBaseUrl || !code) return undefined;
+    let cancelled = false;
+
+    const loadOrderbook = async (first = false) => {
+      if (first) setOrderbookLoading(true);
+      try {
+        const res = await axios.get(`${apiBaseUrl}/api/stock/orderbook/${code}`);
+        if (cancelled) return;
+        setOrderbook(res?.data || null);
+        setOrderbookError("");
+      } catch (err) {
+        if (cancelled) return;
+        setOrderbookError(err?.response?.data?.message || err?.message || "Failed to load orderbook.");
+      } finally {
+        if (first && !cancelled) setOrderbookLoading(false);
+      }
+    };
+
+    loadOrderbook(true);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) loadOrderbook(false);
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [apiBaseUrl, code]);
+
   return (
     <div className="app-card" style={{ padding: 16 }}>
-      <h3 style={{ marginTop: 0, marginBottom: 12 }}>종목정보</h3>
+      <h3 style={{ marginTop: 0, marginBottom: 12 }}>Market</h3>
 
       <div className="app-toolbar-row" style={{ marginBottom: 12 }}>
-        <label>종목</label>
+        <label>Stock</label>
         <select value={code} onChange={(e) => setCode(e.target.value)}>
           {STOCK_OPTIONS.map((s) => (
             <option key={s.code} value={s.code}>
@@ -44,7 +78,7 @@ export default function MarketPage({
           ))}
         </select>
         <button type="button" onClick={() => openTradeFromMarket?.(code)} className="app-nav-btn">
-          모의투자 주문으로
+          Open Trade
         </button>
         <button
           type="button"
@@ -52,31 +86,77 @@ export default function MarketPage({
           disabled={!isLoggedIn || watchlistLoading}
           className={isWatch ? "app-nav-btn active" : "app-nav-btn"}
         >
-          {isWatch ? "관심 해제" : "관심 추가"}
+          {isWatch ? "Watchlisted" : "Add Watchlist"}
         </button>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginBottom: 12 }}>
-        <InfoBox label="종목명" value={stock?.name || code} />
-        <InfoBox label="종목코드" value={code} />
-        <InfoBox label="기준일" value={chartEndDate || "오늘"} />
-        <InfoBox label="현재가(기준일 종가)" value={latestPrice?.price ? `${fmt(latestPrice.price)}원` : "-"} />
-        <InfoBox label="업종" value={mockInfo.sector} />
-        <InfoBox label="시가총액(모의)" value={`${fmt(mockInfo.marketCap)}원`} />
-        <InfoBox label="상장일(참고)" value={mockInfo.listedAt} />
-        <InfoBox label="메모" value={mockInfo.note} />
+        <InfoBox label="Name" value={stock?.name || code} />
+        <InfoBox label="Code" value={code} />
+        <InfoBox label="Base Date" value={chartEndDate || "Today"} />
+        <InfoBox label="Current Price" value={latestPrice?.price ? `${fmt(latestPrice.price)}원` : "-"} />
+        <InfoBox label="Sector" value={mockInfo.sector} />
+        <InfoBox label="Market Cap" value={`${fmt(mockInfo.marketCap)}원`} />
+        <InfoBox label="Listed" value={mockInfo.listedAt} />
+        <InfoBox label="Note" value={mockInfo.note} />
       </div>
 
-      <StockChartCard
+      <MinuteChartCard
         apiBaseUrl={apiBaseUrl}
         code={code}
-        months={12}
-        endDate={chartEndDate}
+        
+        
+        
         height={320}
         title={`${getStockNameByCode(code)} (${code})`}
-        subtitle={`기준일 ${chartEndDate || "오늘"} · 1년 차트`}
+        subtitle={`1Y chart · base ${chartEndDate || "today"} · quote refresh 1m`}
         onLatestPriceChange={setLatestPrice}
       />
+
+      <div className="app-card" style={{ marginTop: 12, padding: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ fontWeight: 700 }}>Orderbook / Execution Strength</div>
+          {orderbook?.time ? <div style={{ fontSize: 12, color: "#64748b" }}>Updated: {orderbook.time}</div> : null}
+        </div>
+
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 8, fontSize: 13, color: "#334155" }}>
+          <span>Price: <strong>{orderbook?.currentPrice != null ? `${fmt(orderbook.currentPrice)}원` : "-"}</strong></span>
+          <span>Total Ask: <strong>{orderbook?.totalAskQty != null ? fmt(orderbook.totalAskQty) : "-"}</strong></span>
+          <span>Total Bid: <strong>{orderbook?.totalBidQty != null ? fmt(orderbook.totalBidQty) : "-"}</strong></span>
+          <span>Strength: <strong>{orderbook?.executionStrength != null ? `${Number(orderbook.executionStrength).toFixed(2)}%` : "-"}</strong></span>
+        </div>
+
+        {orderbookLoading && <div style={{ marginTop: 8, color: "#64748b" }}>Loading orderbook...</div>}
+        {orderbookError && <div style={{ marginTop: 8, color: "#dc2626", fontSize: 12 }}>{orderbookError}</div>}
+
+        <div style={{ overflowX: "auto", marginTop: 10 }}>
+          <table className="sim-order-table" style={{ minWidth: 520 }}>
+            <thead>
+              <tr>
+                <th className="num">Ask Qty</th>
+                <th className="num">Ask Price</th>
+                <th className="num">Bid Price</th>
+                <th className="num">Bid Qty</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(orderbook?.levels || []).slice(0, 5).map((lv) => (
+                <tr key={`market-ob-${lv.level}`}>
+                  <td className="num down">{lv.askQty != null ? fmt(lv.askQty) : "-"}</td>
+                  <td className="num down">{lv.askPrice != null ? fmt(lv.askPrice) : "-"}</td>
+                  <td className="num up">{lv.bidPrice != null ? fmt(lv.bidPrice) : "-"}</td>
+                  <td className="num up">{lv.bidQty != null ? fmt(lv.bidQty) : "-"}</td>
+                </tr>
+              ))}
+              {(!orderbook?.levels || orderbook.levels.length === 0) && (
+                <tr>
+                  <td colSpan={4} style={{ textAlign: "center", color: "#64748b" }}>No orderbook data.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }

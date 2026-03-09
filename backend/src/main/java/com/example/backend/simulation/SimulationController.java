@@ -1,20 +1,36 @@
 package com.example.backend.simulation;
 
 import com.example.backend.auth.JwtService;
+import jakarta.annotation.PreDestroy;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @RestController
 @RequestMapping("/api/sim")
 public class SimulationController {
+    private static final long POPULAR_STOCKS_SSE_INTERVAL_MS = 15_000L;
+
     private final SimulationService simulationService;
     private final JwtService jwtService;
+    private final ScheduledExecutorService sseExecutor = Executors.newScheduledThreadPool(2);
 
     public SimulationController(SimulationService simulationService, JwtService jwtService) {
         this.simulationService = simulationService;
         this.jwtService = jwtService;
+    }
+
+    @PreDestroy
+    public void shutdownSseExecutor() {
+        sseExecutor.shutdownNow();
     }
 
     @GetMapping("/portfolio")
@@ -99,6 +115,45 @@ public class SimulationController {
     ) {
         Long userId = jwtService.validateAndGetUserId(authorizationHeader);
         return simulationService.getPopularStocks(userId, limit, days);
+    }
+
+    @GetMapping(value = "/popular-stocks/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamPopularStocks(
+            @RequestParam String accessToken,
+            @RequestParam(defaultValue = "10") int limit,
+            @RequestParam(defaultValue = "7") int days
+    ) {
+        Long userId = jwtService.validateAndGetUserIdFromToken(accessToken);
+        SseEmitter emitter = new SseEmitter(0L);
+        AtomicBoolean closed = new AtomicBoolean(false);
+
+        Runnable publish = () -> {
+            if (closed.get()) return;
+            try {
+                List<SimPopularStockDto> rows = simulationService.getPopularStocks(userId, limit, days);
+                emitter.send(SseEmitter.event().name("popular-stocks").data(rows));
+            } catch (Exception e) {
+                closed.set(true);
+                emitter.completeWithError(e);
+            }
+        };
+
+        publish.run();
+        ScheduledFuture<?> future = sseExecutor.scheduleAtFixedRate(
+                publish,
+                POPULAR_STOCKS_SSE_INTERVAL_MS,
+                POPULAR_STOCKS_SSE_INTERVAL_MS,
+                TimeUnit.MILLISECONDS
+        );
+
+        Runnable cleanup = () -> {
+            closed.set(true);
+            future.cancel(true);
+        };
+        emitter.onCompletion(cleanup);
+        emitter.onTimeout(cleanup);
+        emitter.onError(err -> cleanup.run());
+        return emitter;
     }
 
     @GetMapping("/rankings/{targetUserId}/portfolio")

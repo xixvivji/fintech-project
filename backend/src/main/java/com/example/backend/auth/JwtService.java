@@ -54,6 +54,13 @@ public class JwtService {
 
     public Long validateAndGetUserId(String authorizationHeader) {
         String token = extractBearerToken(authorizationHeader);
+        return validateAndGetUserIdFromToken(token);
+    }
+
+    public Long validateAndGetUserIdFromToken(String token) {
+        if (token == null || token.isBlank()) {
+            throw new IllegalArgumentException("Access token is required.");
+        }
         String[] parts = token.split("\\.");
         if (parts.length != 3) {
             throw new IllegalArgumentException("유효하지 않은 토큰 형식입니다.");

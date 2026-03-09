@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import MinuteChartCard from "../components/MinuteChartCard";
 import StockChartCard from "../components/StockChartCard";
 
 export default function SimulationPage(props) {
@@ -68,6 +69,7 @@ export default function SimulationPage(props) {
   const [orderbookLoading, setOrderbookLoading] = useState(false);
   const [orderbookError, setOrderbookError] = useState("");
   const [isMarketOpenKst, setIsMarketOpenKst] = useState(true);
+  const [chartTimeframe, setChartTimeframe] = useState("1m");
   const [autoBuyForm, setAutoBuyForm] = useState({
     name: "",
     code: tradeCode || "005930",
@@ -83,6 +85,19 @@ export default function SimulationPage(props) {
     const qty = Number(autoBuyForm.quantity || 0) || 0;
     return `${getStockNameByCode?.(code) || code || "-"} ${qty}주 자동매수`;
   }, [autoBuyForm.code, autoBuyForm.quantity, getStockNameByCode]);
+
+  const chartTimeframeOptions = [
+    { key: "1m", label: "1분", bucketMinutes: 1 },
+    { key: "10m", label: "10분", bucketMinutes: 10 },
+    { key: "30m", label: "30분", bucketMinutes: 30 },
+    { key: "60m", label: "1시간", bucketMinutes: 60 },
+    { key: "1d", label: "일", forcedPeriod: "DAY", months: 6 },
+    { key: "1w", label: "주", forcedPeriod: "WEEK", months: 24 },
+    { key: "1mo", label: "월", forcedPeriod: "MONTH", months: 120 },
+    { key: "1y", label: "년", forcedPeriod: "YEAR", months: 120 },
+  ];
+  const activeTimeframe = chartTimeframeOptions.find((x) => x.key === chartTimeframe) || chartTimeframeOptions[0];
+  const isIntradayTimeframe = Boolean(activeTimeframe.bucketMinutes);
 
   const authHeaders = () => (authToken ? { Authorization: `Bearer ${authToken}` } : {});
 
@@ -479,15 +494,46 @@ export default function SimulationPage(props) {
             </span>
             <span className="sim-selected-stock-date">기준일 {currentDate}</span>
           </div>
-          <StockChartCard
-            key={`${tradeCode}-${chartEndDate || "today"}`}
-            apiBaseUrl={apiBaseUrl}
-            code={tradeCode}
-            months={6}
-            endDate={chartEndDate}
-            height={220}
-            onLatestPriceChange={setSimSelectedPrice}
-          />
+
+          <div className="app-toolbar-row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+            {chartTimeframeOptions.map((tf) => (
+              <button
+                key={`sim-tf-${tf.key}`}
+                type="button"
+                className={chartTimeframe === tf.key ? "sim-order-tab active" : "sim-order-tab"}
+                onClick={() => setChartTimeframe(tf.key)}
+              >
+                {tf.label}
+              </button>
+            ))}
+          </div>
+
+          {isIntradayTimeframe ? (
+            <MinuteChartCard
+              key={`${tradeCode}-${activeTimeframe.key}`}
+              apiBaseUrl={apiBaseUrl}
+              code={tradeCode}
+              height={220}
+              bucketMinutes={activeTimeframe.bucketMinutes}
+              onLatestPriceChange={setSimSelectedPrice}
+              title={`${getStockNameByCode(tradeCode)} (${tradeCode})`}
+              subtitle={`실시간 ${activeTimeframe.label} 캔들`}
+            />
+          ) : (
+            <StockChartCard
+              key={`${tradeCode}-${activeTimeframe.key}-${chartEndDate || "today"}`}
+              apiBaseUrl={apiBaseUrl}
+              code={tradeCode}
+              months={activeTimeframe.months || 6}
+              endDate={chartEndDate}
+              forcedPeriod={activeTimeframe.forcedPeriod}
+              hidePeriodSelector
+              height={220}
+              onLatestPriceChange={setSimSelectedPrice}
+              title={`${getStockNameByCode(tradeCode)} (${tradeCode})`}
+              subtitle={`${activeTimeframe.label} 기준 차트`}
+            />
+          )}
 
           <div className="app-card" style={{ marginTop: 10 }}>
             <div className="app-toolbar-row" style={{ justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>

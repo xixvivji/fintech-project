@@ -142,6 +142,8 @@ export default function HomePage({
 
   useEffect(() => {
     let cancelled = false;
+    let fallbackTimer = null;
+    let es = null;
 
     async function loadPopularStocks(silent = false) {
       if (!apiBaseUrl || !isLoggedIn) return;
@@ -163,14 +165,57 @@ export default function HomePage({
       }
     }
 
+    function startFallbackPolling() {
+      if (fallbackTimer) return;
+      fallbackTimer = window.setInterval(() => {
+        loadPopularStocks(true);
+      }, POPULAR_STOCKS_POLL_MS);
+    }
+
     loadPopularStocks(false);
-    const timer = window.setInterval(() => {
-      loadPopularStocks(true);
-    }, POPULAR_STOCKS_POLL_MS);
+
+    const token = readAccessToken();
+    const canUseSse = Boolean(token) && typeof window !== "undefined" && typeof window.EventSource !== "undefined";
+    if (canUseSse) {
+      const streamUrl = `${apiBaseUrl}/api/sim/popular-stocks/stream?accessToken=${encodeURIComponent(token)}&limit=10&days=7`;
+      es = new window.EventSource(streamUrl);
+
+      const onMessage = (event) => {
+        if (cancelled) return;
+        try {
+          const parsed = JSON.parse(event?.data || "[]");
+          if (Array.isArray(parsed)) {
+            setPopularRows(parsed);
+            setPopularLoading(false);
+            setPopularError("");
+          }
+        } catch (_) {
+          // Ignore malformed event payloads.
+        }
+      };
+
+      es.addEventListener("popular-stocks", onMessage);
+      es.onmessage = onMessage;
+      es.onerror = () => {
+        if (cancelled) return;
+        if (es && es.readyState === window.EventSource.CLOSED) {
+          es.close();
+          es = null;
+          startFallbackPolling();
+        }
+      };
+    } else {
+      startFallbackPolling();
+    }
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (fallbackTimer) {
+        window.clearInterval(fallbackTimer);
+      }
+      if (es) {
+        es.close();
+      }
     };
   }, [apiBaseUrl, isLoggedIn]);
 

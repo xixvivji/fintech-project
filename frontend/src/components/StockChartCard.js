@@ -129,6 +129,7 @@ export default function StockChartCard({
   code,
   months = 6,
   endDate,
+  realtimePollMs = REALTIME_POLL_MS,
   height = 280,
   onLatestPriceChange,
   title,
@@ -136,6 +137,8 @@ export default function StockChartCard({
   headerActions,
   compareCode,
   compareLabel,
+  forcedPeriod,
+  hidePeriodSelector = false,
 }) {
   const wrapRef = useRef(null);
   const chartRef = useRef(null);
@@ -149,12 +152,17 @@ export default function StockChartCard({
   const compareModeRef = useRef(Boolean(compareCode));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [period, setPeriod] = useState("DAY");
+  const [period, setPeriod] = useState(forcedPeriod || "DAY");
   const [hoverInfo, setHoverInfo] = useState(null);
 
   useEffect(() => {
     periodRef.current = period;
   }, [period]);
+
+  useEffect(() => {
+    if (!forcedPeriod) return;
+    setPeriod(forcedPeriod);
+  }, [forcedPeriod]);
 
   useEffect(() => {
     compareModeRef.current = Boolean(compareCode);
@@ -414,13 +422,13 @@ export default function StockChartCard({
       }
     };
 
-    const timer = window.setInterval(updateSeriesWithRealtime, REALTIME_POLL_MS);
+    const timer = window.setInterval(updateSeriesWithRealtime, Math.max(1000, Number(realtimePollMs) || REALTIME_POLL_MS));
     updateSeriesWithRealtime();
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [apiBaseUrl, code, endDate, compareCode, onLatestPriceChange, applyMainSeriesData]);
+  }, [apiBaseUrl, code, endDate, compareCode, onLatestPriceChange, applyMainSeriesData, realtimePollMs]);
 
   return (
     <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", padding: 12 }}>
@@ -447,31 +455,33 @@ export default function StockChartCard({
             <span>저가: <strong>{fmtPrice(hoverInfo?.low)}</strong></span>
             <span>종가: <strong>{fmtPrice(hoverInfo?.close)}</strong></span>
           </div>
-          <div style={{ display: "inline-flex", border: "1px solid #dbe2ea", borderRadius: 999, overflow: "hidden" }}>
-            {[
-              { key: "DAY", label: "일" },
-              { key: "WEEK", label: "주" },
-              { key: "MONTH", label: "월" },
-              { key: "YEAR", label: "년" },
-            ].map((x) => (
-              <button
-                key={x.key}
-                type="button"
-                onClick={() => setPeriod(x.key)}
-                style={{
-                  border: "none",
-                  padding: "4px 10px",
-                  background: period === x.key ? "#0f172a" : "#fff",
-                  color: period === x.key ? "#fff" : "#334155",
-                  cursor: "pointer",
-                  fontSize: 12,
-                  fontWeight: 700,
-                }}
-              >
-                {x.label}
-              </button>
-            ))}
-          </div>
+          {!hidePeriodSelector && (
+            <div style={{ display: "inline-flex", border: "1px solid #dbe2ea", borderRadius: 999, overflow: "hidden" }}>
+              {[
+                { key: "DAY", label: "일" },
+                { key: "WEEK", label: "주" },
+                { key: "MONTH", label: "월" },
+                { key: "YEAR", label: "년" },
+              ].map((x) => (
+                <button
+                  key={x.key}
+                  type="button"
+                  onClick={() => setPeriod(x.key)}
+                  style={{
+                    border: "none",
+                    padding: "4px 10px",
+                    background: period === x.key ? "#0f172a" : "#fff",
+                    color: period === x.key ? "#fff" : "#334155",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 700,
+                  }}
+                >
+                  {x.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
       {loading && <div style={{ marginBottom: 8, color: "#64748b", fontSize: 13 }}>불러오는 중...</div>}

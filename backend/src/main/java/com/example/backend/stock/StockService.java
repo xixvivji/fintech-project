@@ -1,5 +1,7 @@
 package com.example.backend.stock;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -25,12 +27,14 @@ import java.util.stream.Collectors;
 
 @Service
 public class StockService {
+    private static final Logger log = LoggerFactory.getLogger(StockService.class);
     private static final long MIN_REQUEST_INTERVAL_MS = 400L;
     private static final int MAX_RATE_LIMIT_RETRY = 3;
     private static final int MAX_CHUNK_REQUESTS = 30;
     private static final long CHART_CACHE_TTL_MS = 20_000L;
     private static final long PRICE_SERIES_CACHE_TTL_MS = 600_000L;
     private static final long ORDERBOOK_CACHE_TTL_MS = 5_000L;
+    private static final long ORDERBOOK_DEBUG_LOG_INTERVAL_MS = 60_000L;
 
     private final DailyPriceRepository dailyPriceRepository;
 
@@ -66,6 +70,7 @@ public class StockService {
     private final ConcurrentHashMap<String, CacheEntry> chartCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, PriceSeriesCacheEntry> priceSeriesCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, OrderBookCacheEntry> orderBookCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> orderBookDebugLogAt = new ConcurrentHashMap<>();
 
     public StockService(DailyPriceRepository dailyPriceRepository) {
         this.dailyPriceRepository = dailyPriceRepository;
@@ -280,6 +285,9 @@ public class StockService {
                 );
             } catch (Exception e) {
                 lastError = e;
+                if (shouldLogOrderBookDebug(normalizedCode)) {
+                    log.warn("OrderBook request failed code={} marketDiv={} message={}", normalizedCode, marketDiv, e.getMessage());
+                }
             }
         }
 
@@ -315,15 +323,15 @@ public class StockService {
                 ResponseEntity<Map> res = requestChartWithRetry(restTemplate, url, entity);
                 Map<String, Object> body = res.getBody();
                 if (body == null) continue;
-                Object outputObj = body.get("output");
-                if (!(outputObj instanceof Map<?, ?> output)) continue;
+                Map<String, Object> output = mergeOrderBookOutputs(body);
+                if (output == null || output.isEmpty()) continue;
 
                 List<OrderBookLevelDto> levels = new ArrayList<>();
                 for (int i = 1; i <= 10; i++) {
                     Double askPrice = parseDoubleOrNull(String.valueOf(output.get("askp" + i)));
-                    Long askQty = parseLongOrNull(String.valueOf(output.get("askp_rsqn" + i)));
+                    Long askQty = parseLongFromAny(output, "askp_rsqn" + i, "askp_qty" + i, "askp_rsqn_" + i, "ask_qty" + i);
                     Double bidPrice = parseDoubleOrNull(String.valueOf(output.get("bidp" + i)));
-                    Long bidQty = parseLongOrNull(String.valueOf(output.get("bidp_rsqn" + i)));
+                    Long bidQty = parseLongFromAny(output, "bidp_rsqn" + i, "bidp_qty" + i, "bidp_rsqn_" + i, "bid_qty" + i);
                     if (askPrice == null && bidPrice == null) continue;
                     levels.add(new OrderBookLevelDto(
                             i,
@@ -334,12 +342,13 @@ public class StockService {
                     ));
                 }
 
-                Double currentPrice = parseDoubleOrNull(String.valueOf(output.get("stck_prpr")));
+                Double currentPrice = parseDoubleFromAny(output, "stck_prpr", "antc_cnpr", "cur_prc", "stck_cntg_pric");
                 if (currentPrice == null) {
-                    currentPrice = parseDoubleOrNull(String.valueOf(output.get("antc_cnpr")));
+                    RealtimeQuoteDto quote = getRealtimeQuote(normalizedCode);
+                    currentPrice = quote == null ? null : quote.getPrice();
                 }
-                Long totalAsk = parseLongFromAny(output, "total_askp_rsqn", "total_ask_rsqn", "askp_tot_rsqn");
-                Long totalBid = parseLongFromAny(output, "total_bidp_rsqn", "total_bid_rsqn", "bidp_tot_rsqn");
+                Long totalAsk = parseLongFromAny(output, "total_askp_rsqn", "total_ask_rsqn", "askp_tot_rsqn", "tot_askp_rsqn", "total_ask_qty");
+                Long totalBid = parseLongFromAny(output, "total_bidp_rsqn", "total_bid_rsqn", "bidp_tot_rsqn", "tot_bidp_rsqn", "total_bid_qty");
                 if ((totalAsk == null || totalBid == null) && !levels.isEmpty()) {
                     long askSum = 0L;
                     long bidSum = 0L;
@@ -354,7 +363,9 @@ public class StockService {
                 if (totalAsk != null && totalAsk > 0 && totalBid != null) {
                     strength = round2((double) totalBid / totalAsk * 100.0);
                 }
-                Object rawTime = output.containsKey("aspr_acpt_hour") ? output.get("aspr_acpt_hour") : "";
+                Object rawTime = output.containsKey("aspr_acpt_hour")
+                        ? output.get("aspr_acpt_hour")
+                        : output.getOrDefault("stck_cntg_hour", "");
                 String time = String.valueOf(rawTime);
                 if (time == null || "null".equalsIgnoreCase(time)) {
                     time = "";
@@ -369,6 +380,21 @@ public class StockService {
                         strength,
                         levels
                 );
+                if ((levels.isEmpty() || totalAsk == null || totalBid == null || strength == null) && shouldLogOrderBookDebug(normalizedCode)) {
+                    log.warn("OrderBook sparse data code={} marketDiv={} time={} currentPrice={} totalAsk={} totalBid={} strength={} levelCount={} bodyKeys={} outputKeys={} rtCd={} msg1={}",
+                            normalizedCode,
+                            marketDiv,
+                            time,
+                            currentPrice,
+                            totalAsk,
+                            totalBid,
+                            strength,
+                            levels.size(),
+                            body.keySet(),
+                            output.keySet(),
+                            body.get("rt_cd"),
+                            body.get("msg1"));
+                }
                 putCachedOrderBook(normalizedCode, result);
                 return result;
             } catch (Exception e) {
@@ -767,6 +793,55 @@ public class StockService {
             if (parsed != null) return parsed;
         }
         return null;
+    }
+
+    private Double parseDoubleFromAny(Map<?, ?> source, String... keys) {
+        if (source == null || keys == null) return null;
+        for (String key : keys) {
+            if (key == null || key.isBlank()) continue;
+            Object raw = source.get(key);
+            if (raw == null) continue;
+            Double parsed = parseDoubleOrNull(String.valueOf(raw));
+            if (parsed != null) return parsed;
+        }
+        return null;
+    }
+
+    private Map<String, Object> mergeOrderBookOutputs(Map<String, Object> body) {
+        if (body == null || body.isEmpty()) return null;
+        Map<String, Object> merged = new HashMap<>();
+        appendOutputToMap(body.get("output"), merged);
+        appendOutputToMap(body.get("output1"), merged);
+        appendOutputToMap(body.get("output2"), merged);
+        return merged.isEmpty() ? null : merged;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void appendOutputToMap(Object source, Map<String, Object> target) {
+        if (source == null || target == null) return;
+        if (source instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> e : map.entrySet()) {
+                if (e.getKey() == null) continue;
+                target.put(String.valueOf(e.getKey()), e.getValue());
+            }
+            return;
+        }
+        if (source instanceof List<?> list) {
+            for (Object item : list) {
+                appendOutputToMap(item, target);
+            }
+        }
+    }
+
+    private boolean shouldLogOrderBookDebug(String stockCode) {
+        if (stockCode == null || stockCode.isBlank()) return false;
+        long now = System.currentTimeMillis();
+        Long last = orderBookDebugLogAt.get(stockCode);
+        if (last != null && now - last < ORDERBOOK_DEBUG_LOG_INTERVAL_MS) {
+            return false;
+        }
+        orderBookDebugLogAt.put(stockCode, now);
+        return true;
     }
 
     private double round2(double value) {

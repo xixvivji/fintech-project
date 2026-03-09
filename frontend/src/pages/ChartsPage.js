@@ -1,14 +1,16 @@
 import React, { useEffect, useMemo, useState } from "react";
 import StockChartCard from "../components/StockChartCard";
+import MinuteChartCard from "../components/MinuteChartCard";
 import { PERIOD_OPTIONS, STOCK_OPTIONS } from "../constants/stocks";
 
 const CARD_PERIOD_PRESETS = [
   { label: "6M", value: 6 },
   { label: "1Y", value: 12 },
-  { label: "전체", value: 120 },
+  { label: "ALL", value: 120 },
 ];
 
 const CARD_PREFS_KEY = "fintech_chart_card_prefs_v3";
+const CHART_MODE_KEY = "fintech_chart_mode_v1";
 
 function readCardPrefs() {
   try {
@@ -22,6 +24,15 @@ function readCardPrefs() {
     };
   } catch {
     return { periods: {}, compares: {}, recentCompares: [] };
+  }
+}
+
+function readChartMode() {
+  try {
+    const mode = localStorage.getItem(CHART_MODE_KEY);
+    return mode === "MINUTE" ? "MINUTE" : "DAILY";
+  } catch {
+    return "DAILY";
   }
 }
 
@@ -56,6 +67,7 @@ export default function ChartsPage({
   const [recentCompareCodes, setRecentCompareCodes] = useState([]);
   const [leagueBadgePulse, setLeagueBadgePulse] = useState(false);
   const [draggingCode, setDraggingCode] = useState("");
+  const [chartMode, setChartMode] = useState(() => readChartMode());
 
   useEffect(() => {
     const prefs = readCardPrefs();
@@ -76,6 +88,12 @@ export default function ChartsPage({
       );
     } catch {}
   }, [cardPeriods, cardCompareCodes, recentCompareCodes]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHART_MODE_KEY, chartMode);
+    } catch {}
+  }, [chartMode]);
 
   useEffect(() => {
     if (!leagueState?.currentDate) return;
@@ -131,19 +149,24 @@ export default function ChartsPage({
     <>
       <div className="app-card" style={cardStyle}>
         <div className="app-toolbar-row" style={{ justifyContent: "space-between", marginBottom: 10 }}>
-          <div style={{ fontWeight: 800 }}>차트 조회</div>
+          <div style={{ fontWeight: 800 }}>Chart View</div>
           <div className={leagueBadgeClassName}>
-            공용 기준일: <strong>{leagueState?.currentDate || chartEndDate || "-"}</strong>
+            Trading Date <strong>{leagueState?.currentDate || chartEndDate || "-"}</strong>
           </div>
         </div>
 
-        {watchlistLoading && <div style={{ color: "#2563eb", fontWeight: 600 }}>관심종목 불러오는 중...</div>}
+        {watchlistLoading && <div style={{ color: "#2563eb", fontWeight: 600 }}>Loading watchlist...</div>}
         {uiMessage && <div style={{ color: "#b91c1c", fontWeight: 600 }}>{uiMessage}</div>}
 
-        <div className="app-toolbar-row" style={{ gap: 10, marginBottom: 10 }}>
-          <label style={labelStyle}>종목 검색</label>
-          <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="종목명 또는 코드" style={inputStyle} />
-          <label style={labelStyle}>기본 기간</label>
+        <div className="app-toolbar-row" style={{ gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+          <label style={labelStyle}>Stock Search</label>
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Name or code"
+            style={inputStyle}
+          />
+          <label style={labelStyle}>Default Period</label>
           <select value={monthsInput} onChange={(e) => setMonthsInput(Number(e.target.value))} style={inputStyle}>
             {PERIOD_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
@@ -152,13 +175,30 @@ export default function ChartsPage({
             ))}
           </select>
           <button type="button" onClick={applyFilter} style={primaryBtn}>
-            적용
+            Apply
           </button>
+
+          <div style={{ marginLeft: "auto", display: "inline-flex", border: "1px solid #d1d5db", borderRadius: 8, overflow: "hidden" }}>
+            <button
+              type="button"
+              onClick={() => setChartMode("DAILY")}
+              style={modeBtnStyle(chartMode === "DAILY")}
+            >
+              Daily
+            </button>
+            <button
+              type="button"
+              onClick={() => setChartMode("MINUTE")}
+              style={modeBtnStyle(chartMode === "MINUTE")}
+            >
+              1m
+            </button>
+          </div>
         </div>
 
         <div style={{ color: "#64748b", fontSize: 12, marginBottom: 10 }}>
-          카드별 기간(6M/1Y/전체)과 비교 설정은 저장됩니다. 비교 드롭다운은 최근 사용/관심종목이 우선 노출됩니다.
-          현재 기본 표시 기간: {chartDisplayMonths}개월
+          Card period and compare settings are kept per code. Compare is available in Daily mode only.
+          Current default period: {chartDisplayMonths} months.
         </div>
 
         <div style={listWrapStyle}>
@@ -168,7 +208,7 @@ export default function ChartsPage({
             return (
               <div key={stock.code} style={{ ...listRowStyle, background: inView ? "#e0f2fe" : "#fff" }}>
                 <button type="button" onClick={() => (inView ? removeFromView(stock.code) : addToView(stock.code))} style={listNameBtnStyle(inView)}>
-                  {inView ? "제거 " : "+ "} {stock.name} ({stock.code})
+                  {inView ? "Remove" : "Add"} {stock.name} ({stock.code})
                 </button>
                 <button
                   type="button"
@@ -176,7 +216,7 @@ export default function ChartsPage({
                   disabled={watchlistLoading || !isLoggedIn}
                   style={watchBtnStyle(inWatchlist)}
                 >
-                  {inWatchlist ? "관심 해제" : "관심 추가"}
+                  {inWatchlist ? "Unwatch" : "Watch"}
                 </button>
               </div>
             );
@@ -185,9 +225,9 @@ export default function ChartsPage({
       </div>
 
       <div className="app-card app-toolbar-row" style={{ ...cardStyle, gap: 8 }}>
-        <strong>관심종목</strong>
-        {!isLoggedIn && <span style={{ color: "#64748b" }}>로그인 후 개인 관심종목을 사용할 수 있습니다.</span>}
-        {isLoggedIn && watchlistCodes.length === 0 && <span style={{ color: "#64748b" }}>등록된 종목이 없습니다.</span>}
+        <strong>Watchlist</strong>
+        {!isLoggedIn && <span style={{ color: "#64748b" }}>Log in to use personal watchlist.</span>}
+        {isLoggedIn && watchlistCodes.length === 0 && <span style={{ color: "#64748b" }}>No watchlist items.</span>}
         {watchlistCodes.map((code) => (
           <span key={code} style={watchChipStyle}>
             {getStockNameByCode(code)} ({code})
@@ -196,11 +236,12 @@ export default function ChartsPage({
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: chartGridColumns, gap: 16 }}>
-        {chartCodes.length === 0 && <div style={cardStyle}>종목을 추가하면 차트가 표시됩니다.</div>}
+        {chartCodes.length === 0 && <div style={cardStyle}>Add stocks to view chart cards.</div>}
         {chartCodes.map((code) => {
           const months = getCardMonths(code);
           const compareCode = getCardCompareCode(code);
           const compareLabel = compareCode ? getStockNameByCode(compareCode) : "";
+
           return (
             <div
               key={`card-wrap-${code}`}
@@ -216,52 +257,65 @@ export default function ChartsPage({
               onDragEnd={() => setDraggingCode("")}
               className={draggingCode === code ? "chart-card-dragging" : "chart-card-draggable"}
             >
-              <StockChartCard
-                key={`${code}-${months}-${chartEndDate || "today"}-${compareCode || "none"}`}
-                apiBaseUrl={apiBaseUrl}
-                code={code}
-                compareCode={compareCode || undefined}
-                compareLabel={compareLabel}
-                months={months}
-                endDate={chartEndDate}
-                height={280}
-                title={`${getStockNameByCode(code)} (${code})`}
-                subtitle={`표시 ${months === 120 ? "전체" : `${months}개월`} · 기준 ${chartEndDate || "오늘"}`}
-                headerActions={
-                  <div className="chart-card-controls">
-                    <div className="chart-card-chip-group">
-                      {CARD_PERIOD_PRESETS.map((preset) => (
-                        <button
-                          key={`${code}-period-${preset.value}`}
-                          type="button"
-                          className={months === preset.value ? "chart-card-chip active" : "chart-card-chip"}
-                          onClick={() => setCardPeriods((prev) => ({ ...prev, [code]: preset.value }))}
+              {chartMode === "MINUTE" ? (
+                <MinuteChartCard
+                  key={`${code}-minute`}
+                  apiBaseUrl={apiBaseUrl}
+                  code={code}
+                  height={280}
+                  title={`${getStockNameByCode(code)} (${code})`}
+                  subtitle="Realtime 1-minute candles"
+                />
+              ) : (
+                <StockChartCard
+                  key={`${code}-${months}-${chartEndDate || "today"}-${compareCode || "none"}`}
+                  apiBaseUrl={apiBaseUrl}
+                  code={code}
+                  compareCode={compareCode || undefined}
+                  compareLabel={compareLabel}
+                  months={months}
+                  endDate={chartEndDate}
+                  height={280}
+                  title={`${getStockNameByCode(code)} (${code})`}
+                  subtitle={`Range ${months === 120 ? "ALL" : `${months}M`} / base date ${chartEndDate || "today"}`}
+                  headerActions={
+                    <div className="chart-card-controls">
+                      <div className="chart-card-chip-group">
+                        {CARD_PERIOD_PRESETS.map((preset) => (
+                          <button
+                            key={`${code}-period-${preset.value}`}
+                            type="button"
+                            className={months === preset.value ? "chart-card-chip active" : "chart-card-chip"}
+                            onClick={() => setCardPeriods((prev) => ({ ...prev, [code]: preset.value }))}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="chart-card-compare-row">
+                        <span className="chart-card-drag-handle" title="Drag to reorder cards">
+                          ::
+                        </span>
+                        <label className="chart-card-compare-label">Compare</label>
+                        <select
+                          className="chart-card-compare-select"
+                          value={compareCode}
+                          onChange={(e) => updateCompareCode(code, e.target.value)}
                         >
-                          {preset.label}
-                        </button>
-                      ))}
+                          <option value="">None</option>
+                          {prioritizedCompareOptions
+                            .filter((s) => s.code !== code)
+                            .map((s) => (
+                              <option key={`${code}-cmp-${s.code}`} value={s.code}>
+                                {s.name} ({s.code})
+                              </option>
+                            ))}
+                        </select>
+                      </div>
                     </div>
-                    <div className="chart-card-compare-row">
-                      <span className="chart-card-drag-handle" title="드래그해서 카드 순서 변경">↕</span>
-                      <label className="chart-card-compare-label">비교</label>
-                      <select
-                        className="chart-card-compare-select"
-                        value={compareCode}
-                        onChange={(e) => updateCompareCode(code, e.target.value)}
-                      >
-                        <option value="">없음</option>
-                        {prioritizedCompareOptions
-                          .filter((s) => s.code !== code)
-                          .map((s) => (
-                            <option key={`${code}-cmp-${s.code}`} value={s.code}>
-                              {s.name} ({s.code})
-                            </option>
-                          ))}
-                      </select>
-                    </div>
-                  </div>
-                }
-              />
+                  }
+                />
+              )}
             </div>
           );
         })}
@@ -278,12 +332,20 @@ const cardStyle = {
   border: "1px solid #e5e7eb",
   boxShadow: "0 2px 4px rgba(0,0,0,0.04)",
 };
+
 const labelStyle = { fontWeight: 700 };
 const inputStyle = { padding: 10, borderRadius: 6, border: "1px solid #d1d5db", minWidth: 140 };
 const primaryBtn = { padding: "10px 14px", border: "none", borderRadius: 8, background: "#2563eb", color: "#fff", fontWeight: 700 };
+const modeBtnStyle = (active) => ({
+  border: "none",
+  padding: "8px 12px",
+  background: active ? "#0f172a" : "#fff",
+  color: active ? "#fff" : "#334155",
+  fontWeight: 700,
+  cursor: "pointer",
+});
 const listWrapStyle = { width: "100%", maxHeight: 220, overflowY: "auto", border: "1px solid #e5e7eb", borderRadius: 8, background: "#fcfcfd" };
 const listRowStyle = { display: "flex", justifyContent: "space-between", gap: 8, padding: "8px 10px", borderBottom: "1px solid #f1f5f9" };
 const listNameBtnStyle = (inView) => ({ border: "none", background: "transparent", cursor: "pointer", textAlign: "left", color: inView ? "#0369a1" : "#111827", fontWeight: 600 });
 const watchBtnStyle = (inWatchlist) => ({ border: "1px solid #d1d5db", borderRadius: 6, background: inWatchlist ? "#fff7ed" : "#fff", padding: "2px 8px" });
 const watchChipStyle = { padding: "6px 10px", border: "1px solid #d1d5db", borderRadius: 999, background: "#fff" };
-
