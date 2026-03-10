@@ -2,6 +2,9 @@ import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import MinuteChartCard from "../components/MinuteChartCard";
 import { STOCK_OPTIONS } from "../constants/stocks";
+import { createStockRealtimeSocket } from "../utils/stockRealtimeSocket";
+
+const ORDERBOOK_POLL_MS = 1500;
 
 export default function MarketPage({
   apiBaseUrl,
@@ -17,6 +20,7 @@ export default function MarketPage({
 }) {
   const [code, setCode] = useState(selectedTradeCode || "005930");
   const [latestPrice, setLatestPrice] = useState(null);
+  const [quote, setQuote] = useState(null);
   const [orderbook, setOrderbook] = useState(null);
   const [orderbookLoading, setOrderbookLoading] = useState(false);
   const [orderbookError, setOrderbookError] = useState("");
@@ -41,7 +45,7 @@ export default function MarketPage({
     const loadOrderbook = async (first = false) => {
       if (first) setOrderbookLoading(true);
       try {
-        const res = await axios.get(`${apiBaseUrl}/api/stock/orderbook/${code}`);
+        const res = await axios.get(apiBaseUrl + "/api/stock/orderbook/" + code);
         if (cancelled) return;
         setOrderbook(res?.data || null);
         setOrderbookError("");
@@ -53,13 +57,57 @@ export default function MarketPage({
       }
     };
 
+    const loadQuote = async () => {
+      try {
+        const res = await axios.get(apiBaseUrl + "/api/stock/quote/" + code);
+        if (cancelled) return;
+        if (res?.data) {
+          setQuote(res.data);
+          if (res.data?.price) {
+            setLatestPrice({ price: Number(res.data.price), time: new Date().toISOString() });
+          }
+        }
+      } catch (_) {
+      }
+    };
+
     loadOrderbook(true);
+    loadQuote();
+
+    const socket = createStockRealtimeSocket(apiBaseUrl, code, {
+      onMessage: (payload) => {
+        if (cancelled || !payload || payload.type !== "stock.realtime") return;
+        if (payload.orderbook) {
+          setOrderbook(payload.orderbook);
+          setOrderbookError("");
+        }
+        if (payload.quote) {
+          setQuote(payload.quote);
+        }
+        if (payload.quote?.price) {
+          setLatestPrice({
+            price: Number(payload.quote.price),
+            time: new Date(payload.sentAt || Date.now()).toISOString(),
+          });
+        }
+      },
+      onError: () => {
+        if (!cancelled) {
+          setOrderbookError((prev) => prev || "Realtime socket unstable; polling fallback is active.");
+        }
+      },
+    });
+
     const timer = window.setInterval(() => {
-      if (!document.hidden) loadOrderbook(false);
-    }, 2000);
+      if (!document.hidden) {
+        loadOrderbook(false);
+        loadQuote();
+      }
+    }, ORDERBOOK_POLL_MS * 2);
 
     return () => {
       cancelled = true;
+      socket.close();
       window.clearInterval(timer);
     };
   }, [apiBaseUrl, code]);
@@ -94,10 +142,17 @@ export default function MarketPage({
         <InfoBox label="Name" value={stock?.name || code} />
         <InfoBox label="Code" value={code} />
         <InfoBox label="Base Date" value={chartEndDate || "Today"} />
-        <InfoBox label="Current Price" value={latestPrice?.price ? `${fmt(latestPrice.price)}원` : "-"} />
+        <InfoBox label="Current Price" value={quote?.price != null ? fmt(Number(quote.price)) + " KRW" : latestPrice?.price ? fmt(Number(latestPrice.price)) + " KRW" : "-"} />
         <InfoBox label="Sector" value={mockInfo.sector} />
-        <InfoBox label="Market Cap" value={`${fmt(mockInfo.marketCap)}원`} />
+        <InfoBox label="Market Cap" value={fmt(mockInfo.marketCap) + " KRW"} />
         <InfoBox label="Listed" value={mockInfo.listedAt} />
+        <InfoBox label="Change" value={quote?.change != null ? (Number(quote.change) > 0 ? "+" : "") + Number(quote.change).toFixed(2) : "-"} />
+        <InfoBox label="Change %" value={quote?.changeRate != null ? (Number(quote.changeRate) > 0 ? "+" : "") + Number(quote.changeRate).toFixed(2) + "%" : "-"} />
+        <InfoBox label="Volume" value={quote?.volume != null ? fmt(Number(quote.volume)) : "-"} />
+        <InfoBox label="Turnover" value={quote?.turnover != null ? fmt(Number(quote.turnover)) + " KRW" : "-"} />
+        <InfoBox label="Open" value={quote?.open != null ? fmt(Number(quote.open)) + " KRW" : "-"} />
+        <InfoBox label="High" value={quote?.high != null ? fmt(Number(quote.high)) + " KRW" : "-"} />
+        <InfoBox label="Low" value={quote?.low != null ? fmt(Number(quote.low)) + " KRW" : "-"} />
         <InfoBox label="Note" value={mockInfo.note} />
       </div>
 
@@ -109,7 +164,7 @@ export default function MarketPage({
         
         height={320}
         title={`${getStockNameByCode(code)} (${code})`}
-        subtitle={`1Y chart · base ${chartEndDate || "today"} · quote refresh 1m`}
+        subtitle={`1Y chart | base ${chartEndDate || "today"} | realtime quote`}
         onLatestPriceChange={setLatestPrice}
       />
 
@@ -120,7 +175,7 @@ export default function MarketPage({
         </div>
 
         <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 8, fontSize: 13, color: "#334155" }}>
-          <span>Price: <strong>{orderbook?.currentPrice != null ? `${fmt(orderbook.currentPrice)}원` : "-"}</strong></span>
+          <span>Price: <strong>{quote?.price != null ? fmt(Number(quote.price)) + " KRW" : orderbook?.currentPrice != null ? fmt(orderbook.currentPrice) + " KRW" : "-"}</strong></span>
           <span>Total Ask: <strong>{orderbook?.totalAskQty != null ? fmt(orderbook.totalAskQty) : "-"}</strong></span>
           <span>Total Bid: <strong>{orderbook?.totalBidQty != null ? fmt(orderbook.totalBidQty) : "-"}</strong></span>
           <span>Strength: <strong>{orderbook?.executionStrength != null ? `${Number(orderbook.executionStrength).toFixed(2)}%` : "-"}</strong></span>
@@ -169,3 +224,4 @@ function InfoBox({ label, value }) {
     </div>
   );
 }
+

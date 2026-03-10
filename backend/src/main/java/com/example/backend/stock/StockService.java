@@ -1,8 +1,11 @@
 package com.example.backend.stock;
 
+import com.example.backend.cache.RedisStockCacheService;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -14,6 +17,8 @@ import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.client.RestTemplate;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -37,6 +42,8 @@ public class StockService {
     private static final long ORDERBOOK_DEBUG_LOG_INTERVAL_MS = 60_000L;
 
     private final DailyPriceRepository dailyPriceRepository;
+    private final MinuteCandleRepository minuteCandleRepository;
+    private final RedisStockCacheService redisStockCacheService;
 
     @Value("${kis.app-key}")
     private String appKey;
@@ -56,6 +63,18 @@ public class StockService {
     @Value("${kis.tr-id-orderbook:FHKST01010200}")
     private String orderbookTrId;
 
+    @Value("${kis.tr-id-intraday:FHKST03010200}")
+    private String trIdIntraday;
+
+    @Value("${kis.tr-id-intraday-daily:FHKST03010230}")
+    private String trIdIntradayDaily;
+
+    @Value("${kis.path-intraday:/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice}")
+    private String intradayPath;
+
+    @Value("${kis.path-intraday-daily:/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice}")
+    private String intradayDailyPath;
+
     @Value("${kis.market-div-codes:J,Q}")
     private String marketDivCodes;
 
@@ -72,8 +91,14 @@ public class StockService {
     private final ConcurrentHashMap<String, OrderBookCacheEntry> orderBookCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> orderBookDebugLogAt = new ConcurrentHashMap<>();
 
-    public StockService(DailyPriceRepository dailyPriceRepository) {
+    public StockService(
+            DailyPriceRepository dailyPriceRepository,
+            MinuteCandleRepository minuteCandleRepository,
+            RedisStockCacheService redisStockCacheService
+    ) {
         this.dailyPriceRepository = dailyPriceRepository;
+        this.minuteCandleRepository = minuteCandleRepository;
+        this.redisStockCacheService = redisStockCacheService;
     }
 
     private void fetchAccessToken() {
@@ -135,6 +160,96 @@ public class StockService {
         }
         putCachedChart(cacheKey, fromKis);
         return fromKis;
+    }
+
+
+    public List<ChartDataDto> getIntradayChart(String stockCode, int minutes, int limit) {
+        String normalizedCode = normalizeCode(stockCode);
+        int safeMinutes = Math.max(1, Math.min(minutes, 60));
+        int safeLimit = Math.max(30, Math.min(limit, 20000));
+        int baseRowsLimit = Math.max(safeLimit * safeMinutes, safeLimit);
+
+        List<ChartDataDto> oneMinuteRows = getRecentIntradayCandlesFromDb(normalizedCode, baseRowsLimit);
+        if (oneMinuteRows.size() < Math.min(120, baseRowsLimit)) {
+            List<ChartDataDto> fetched = fetchIntradayChartFromKis(normalizedCode, Math.max(300, baseRowsLimit));
+            if (!fetched.isEmpty()) {
+                saveIntradayCandlesToDb(normalizedCode, fetched);
+                oneMinuteRows = getRecentIntradayCandlesFromDb(normalizedCode, baseRowsLimit);
+            }
+        }
+
+        if (oneMinuteRows.isEmpty()) {
+            return List.of();
+        }
+
+        if (safeMinutes <= 1) {
+            return trimTail(oneMinuteRows, safeLimit);
+        }
+        return trimTail(aggregateIntradayCandles(oneMinuteRows, safeMinutes, safeLimit * 2), safeLimit);
+    }
+
+
+    public List<ChartDataDto> getIntradayChart(String stockCode, int minutes, int limit, String endDate, int days) {
+        String normalizedCode = normalizeCode(stockCode);
+        int safeMinutes = Math.max(1, Math.min(minutes, 60));
+        int safeLimit = Math.max(30, Math.min(limit, 20000));
+        int baseRowsLimit = Math.max(safeLimit * safeMinutes, safeLimit);
+        LocalDate endLocalDate = parseEndDateOrToday(endDate);
+        int safeDays = Math.max(1, Math.min(days, 60));
+        boolean isToday = endLocalDate.equals(LocalDate.now());
+        boolean canUseReadThrough = isToday && safeDays <= 1;
+
+        List<ChartDataDto> oneMinuteRows = getRecentIntradayCandlesFromDb(
+                normalizedCode,
+                endLocalDate.minusDays(safeDays - 1),
+                endLocalDate,
+                baseRowsLimit
+        );
+        // Keep range queries fast: only do read-through KIS fetch for "today / 1-day" requests.
+        // Historical windows should be served from DB data populated by backfill jobs.
+        if (canUseReadThrough && oneMinuteRows.size() < Math.min(120, baseRowsLimit)) {
+            List<ChartDataDto> fetched = fetchIntradayChartRangeFromKis(
+                    normalizedCode,
+                    endLocalDate,
+                    safeDays,
+                    Math.max(300, baseRowsLimit)
+            );
+            if (!fetched.isEmpty()) {
+                saveIntradayCandlesToDb(normalizedCode, fetched);
+                oneMinuteRows = getRecentIntradayCandlesFromDb(
+                        normalizedCode,
+                        endLocalDate.minusDays(safeDays - 1),
+                        endLocalDate,
+                        baseRowsLimit
+                );
+            }
+        }
+
+        if (oneMinuteRows.isEmpty()) {
+            return List.of();
+        }
+
+        if (safeMinutes <= 1) {
+            return trimTail(oneMinuteRows, safeLimit);
+        }
+        return trimTail(aggregateIntradayCandles(oneMinuteRows, safeMinutes, safeLimit * 2), safeLimit);
+    }
+
+    private List<ChartDataDto> fetchIntradayChartRangeFromKis(String stockCode, LocalDate endDate, int days, int limitPerDay) {
+        LocalDate end = endDate == null ? LocalDate.now() : endDate;
+        int safeDays = Math.max(1, Math.min(days, 60));
+        int safeLimitPerDay = Math.max(120, Math.min(limitPerDay, 3000));
+
+        List<ChartDataDto> merged = new ArrayList<>();
+        for (int i = safeDays - 1; i >= 0; i--) {
+            LocalDate target = end.minusDays(i);
+            List<ChartDataDto> rows = fetchIntradayChartFromKis(stockCode, target, safeLimitPerDay);
+            if (!rows.isEmpty()) {
+                merged.addAll(rows);
+            }
+        }
+        merged.sort(Comparator.comparing(ChartDataDto::getTime));
+        return merged;
     }
 
     public List<TopVolumeStockDto> getTopVolumeStocks(String date, int limit) {
@@ -231,6 +346,10 @@ public class StockService {
 
     public RealtimeQuoteDto getRealtimeQuote(String stockCode) {
         String normalizedCode = normalizeCode(stockCode);
+        var cached = redisStockCacheService.getCachedQuote(normalizedCode);
+        if (cached.isPresent()) {
+            return cached.get();
+        }
         ensureAccessToken();
 
         RestTemplate restTemplate = new RestTemplate();
@@ -271,9 +390,11 @@ public class StockService {
                 Double low = parseDoubleOrNull(String.valueOf(output.get("stck_lwpr")));
                 Double change = parseDoubleOrNull(String.valueOf(output.get("prdy_vrss")));
                 Double changeRate = parseDoubleOrNull(String.valueOf(output.get("prdy_ctrt")));
+                Long volume = parseLongFromAny(output, "acml_vol", "stck_acml_vol", "cntg_vol", "mlcl_vol");
+                Long turnover = parseLongFromAny(output, "acml_tr_pbmn", "stck_tr_pbmn", "tr_pbmn", "acml_tr_amount");
                 Object rawTime = output.containsKey("stck_cntg_hour") ? output.get("stck_cntg_hour") : "";
                 String time = String.valueOf(rawTime);
-                return new RealtimeQuoteDto(
+                RealtimeQuoteDto dto = new RealtimeQuoteDto(
                         normalizedCode,
                         time == null ? "" : time,
                         round2(price),
@@ -281,12 +402,16 @@ public class StockService {
                         high == null ? null : round2(high),
                         low == null ? null : round2(low),
                         change == null ? null : round2(change),
-                        changeRate == null ? null : round2(changeRate)
+                        changeRate == null ? null : round2(changeRate),
+                        volume,
+                        turnover
                 );
+                redisStockCacheService.cacheQuote(normalizedCode, dto, java.time.Duration.ofSeconds(3));
+                return dto;
             } catch (Exception e) {
                 lastError = e;
                 if (shouldLogOrderBookDebug(normalizedCode)) {
-                    log.warn("OrderBook request failed code={} marketDiv={} message={}", normalizedCode, marketDiv, e.getMessage());
+                    log.warn("Realtime quote request failed code={} marketDiv={} message={}", normalizedCode, marketDiv, e.getMessage());
                 }
             }
         }
@@ -294,7 +419,9 @@ public class StockService {
         // Fallback: return latest close price if intraday quote is unavailable.
         double lastClose = getLatestClosePrice(normalizedCode);
         if (lastClose > 0) {
-            return new RealtimeQuoteDto(normalizedCode, "", round2(lastClose), null, null, null, null, null);
+            RealtimeQuoteDto dto = new RealtimeQuoteDto(normalizedCode, "", round2(lastClose), null, null, null, null, null, null, null);
+            redisStockCacheService.cacheQuote(normalizedCode, dto, java.time.Duration.ofSeconds(3));
+            return dto;
         }
         throw new IllegalStateException("KIS realtime quote request failed for " + normalizedCode + (lastError == null ? "" : ": " + lastError.getMessage()));
     }
@@ -303,6 +430,11 @@ public class StockService {
         String normalizedCode = normalizeCode(stockCode);
         OrderBookDto cached = getCachedOrderBook(normalizedCode);
         if (cached != null) return cached;
+        var redisCached = redisStockCacheService.getCachedOrderBook(normalizedCode);
+        if (redisCached.isPresent()) {
+            putCachedOrderBook(normalizedCode, redisCached.get());
+            return redisCached.get();
+        }
         ensureAccessToken();
 
         RestTemplate restTemplate = new RestTemplate();
@@ -396,6 +528,7 @@ public class StockService {
                             body.get("msg1"));
                 }
                 putCachedOrderBook(normalizedCode, result);
+                redisStockCacheService.cacheOrderBook(normalizedCode, result, java.time.Duration.ofSeconds(2));
                 return result;
             } catch (Exception e) {
                 lastError = e;
@@ -416,6 +549,7 @@ public class StockService {
         if (fallbackPrice > 0) {
             OrderBookDto fallback = new OrderBookDto(normalizedCode, "", round2(fallbackPrice), null, null, null, List.of());
             putCachedOrderBook(normalizedCode, fallback);
+            redisStockCacheService.cacheOrderBook(normalizedCode, fallback, java.time.Duration.ofSeconds(2));
             return fallback;
         }
         throw new IllegalStateException("KIS orderbook request failed for " + normalizedCode + (lastError == null ? "" : ": " + lastError.getMessage()));
@@ -497,10 +631,66 @@ public class StockService {
             row.setLowPrice(dto.getLow());
             row.setClosePrice(dto.getClose());
             row.setVolume(dto.getVolume());
+            row.setTurnover(dto.getTurnover());
             toSave.add(row);
         }
         dailyPriceRepository.saveAll(toSave);
         priceSeriesCache.remove(normalizedCode);
+    }
+
+
+    @Transactional
+    public IntradayBackfillResponseDto backfillIntradayCandles(List<String> codes, Integer limit) {
+        return backfillIntradayCandles(codes, limit, 1, null);
+    }
+
+    @Transactional
+    public IntradayBackfillResponseDto backfillIntradayCandles(List<String> codes, Integer limit, Integer days, String endDate) {
+        if (codes == null || codes.isEmpty()) {
+            throw new IllegalArgumentException("codes is required.");
+        }
+
+        int safeLimit = Math.max(120, Math.min(limit == null ? 1200 : limit, 10000));
+        int safeDays = Math.max(1, Math.min(days == null ? 1 : days, 60));
+        LocalDate targetEndDate = parseEndDateOrToday(endDate);
+
+        int requested = codes.size();
+        int processed = 0;
+        int fetchedRows = 0;
+        Map<String, String> failedCodeMessages = new HashMap<>();
+        List<String> succeededCodes = new ArrayList<>();
+
+        for (String code : codes) {
+            String normalizedCode;
+            try {
+                normalizedCode = normalizeCode(code);
+            } catch (Exception e) {
+                failedCodeMessages.put(String.valueOf(code), safeMessage(e));
+                continue;
+            }
+
+            try {
+                List<ChartDataDto> rows = fetchIntradayChartRangeFromKis(normalizedCode, targetEndDate, safeDays, safeLimit);
+                fetchedRows += rows.size();
+                if (!rows.isEmpty()) {
+                    saveIntradayCandlesToDb(normalizedCode, rows);
+                }
+                processed++;
+                succeededCodes.add(normalizedCode);
+            } catch (Exception e) {
+                failedCodeMessages.put(normalizedCode, safeMessage(e));
+            }
+        }
+
+        return new IntradayBackfillResponseDto(
+                requested,
+                processed,
+                failedCodeMessages.size(),
+                fetchedRows,
+                targetEndDate.toString(),
+                List.copyOf(succeededCodes),
+                Map.copyOf(failedCodeMessages)
+        );
     }
 
     @Transactional
@@ -610,6 +800,301 @@ public class StockService {
         return fetchDailyChartFromKis(stockCode, startLocalDate, endLocalDate);
     }
 
+
+    private List<ChartDataDto> getRecentIntradayCandlesFromDb(String code, int limit) {
+        int safeLimit = Math.max(1, Math.min(limit, 50000));
+        List<MinuteCandleEntity> rows = minuteCandleRepository.findByCodeOrderByBucketTimeDesc(code, PageRequest.of(0, safeLimit));
+        if (rows.isEmpty()) return List.of();
+
+        List<ChartDataDto> result = new ArrayList<>(rows.size());
+        for (int i = rows.size() - 1; i >= 0; i--) {
+            MinuteCandleEntity row = rows.get(i);
+            result.add(new ChartDataDto(
+                    row.getBucketTime().toString(),
+                    row.getOpenPrice(),
+                    row.getHighPrice(),
+                    row.getLowPrice(),
+                    row.getClosePrice(),
+                    row.getVolume()
+            ));
+        }
+        return result;
+    }
+
+
+    private List<ChartDataDto> getRecentIntradayCandlesFromDb(String code, LocalDate fromDate, LocalDate toDate, int limit) {
+        LocalDate start = fromDate == null ? LocalDate.now() : fromDate;
+        LocalDate end = toDate == null ? LocalDate.now() : toDate;
+        if (end.isBefore(start)) {
+            LocalDate t = start;
+            start = end;
+            end = t;
+        }
+
+        LocalDateTime from = start.atStartOfDay();
+        LocalDateTime to = end.plusDays(1).atStartOfDay().minusSeconds(1);
+        List<MinuteCandleEntity> rows = minuteCandleRepository.findByCodeAndBucketTimeBetweenOrderByBucketTimeAsc(code, from, to);
+        if (rows.isEmpty()) return List.of();
+
+        List<ChartDataDto> result = new ArrayList<>(rows.size());
+        for (MinuteCandleEntity row : rows) {
+            result.add(new ChartDataDto(
+                    row.getBucketTime().toString(),
+                    row.getOpenPrice(),
+                    row.getHighPrice(),
+                    row.getLowPrice(),
+                    row.getClosePrice(),
+                    row.getVolume()
+            ));
+        }
+        return trimTail(result, Math.max(1, Math.min(limit, 50000)));
+    }
+    @Transactional
+    private void saveIntradayCandlesToDb(String code, List<ChartDataDto> rows) {
+        if (rows == null || rows.isEmpty()) return;
+
+        LocalDateTime min = null;
+        LocalDateTime max = null;
+        for (ChartDataDto row : rows) {
+            LocalDateTime ts = parseIntradayTime(row.getTime());
+            if (ts == null) continue;
+            LocalDateTime bucket = ts.withSecond(0).withNano(0);
+            if (min == null || bucket.isBefore(min)) min = bucket;
+            if (max == null || bucket.isAfter(max)) max = bucket;
+        }
+        if (min == null || max == null) return;
+
+        Map<LocalDateTime, MinuteCandleEntity> existingByTime = new HashMap<>();
+        for (MinuteCandleEntity e : minuteCandleRepository.findByCodeAndBucketTimeBetweenOrderByBucketTimeAsc(code, min, max)) {
+            existingByTime.put(e.getBucketTime(), e);
+        }
+
+        List<MinuteCandleEntity> toSave = new ArrayList<>();
+        long now = System.currentTimeMillis();
+        for (ChartDataDto row : rows) {
+            LocalDateTime ts = parseIntradayTime(row.getTime());
+            if (ts == null) continue;
+            LocalDateTime bucket = ts.withSecond(0).withNano(0);
+
+            MinuteCandleEntity entity = existingByTime.get(bucket);
+            if (entity == null) {
+                entity = new MinuteCandleEntity();
+                entity.setCode(code);
+                entity.setBucketTime(bucket);
+            }
+            entity.setOpenPrice(row.getOpen());
+            entity.setHighPrice(row.getHigh());
+            entity.setLowPrice(row.getLow());
+            entity.setClosePrice(row.getClose());
+            entity.setVolume(row.getVolume());
+            entity.setUpdatedAt(now);
+            toSave.add(entity);
+        }
+        if (!toSave.isEmpty()) {
+            minuteCandleRepository.saveAll(toSave);
+        }
+    }
+
+    private LocalDateTime parseIntradayTime(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        try {
+            return LocalDateTime.parse(raw);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private List<ChartDataDto> trimTail(List<ChartDataDto> rows, int limit) {
+        if (rows == null || rows.isEmpty()) return List.of();
+        int safeLimit = Math.max(1, limit);
+        if (rows.size() <= safeLimit) return rows;
+        return new ArrayList<>(rows.subList(rows.size() - safeLimit, rows.size()));
+    }
+
+
+    @SuppressWarnings("unchecked")
+    private List<ChartDataDto> fetchIntradayChartFromKis(String stockCode, int limit) {
+        return fetchIntradayChartFromKis(stockCode, LocalDate.now(), limit);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<ChartDataDto> fetchIntradayChartFromKis(String stockCode, LocalDate targetDate, int limit) {
+        ensureAccessToken();
+
+        RestTemplate restTemplate = new RestTemplate();
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("authorization", "Bearer " + this.accessToken);
+        headers.set("appkey", appKey.trim());
+        headers.set("appsecret", appSecret.trim());
+
+        LocalDate date = targetDate == null ? LocalDate.now() : targetDate;
+        boolean isToday = date.equals(LocalDate.now());
+        String intradayTr = trIdIntraday == null || trIdIntraday.isBlank() ? "FHKST03010200" : trIdIntraday.trim();
+        String dailyTr = trIdIntradayDaily == null || trIdIntradayDaily.isBlank() ? "FHKST03010230" : trIdIntradayDaily.trim();
+
+        String ymd = date.format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+        String nowHms = isToday ? LocalTime.now().format(DateTimeFormatter.ofPattern("HHmmss")) : "153000";
+        Exception lastError = null;
+        boolean debugLog = shouldLogOrderBookDebug(stockCode);
+        int attemptCount = 0;
+
+        List<String[]> variants = new ArrayList<>();
+        if (isToday) {
+            variants.add(new String[]{intradayPath, intradayTr});
+        } else {
+            variants.add(new String[]{intradayDailyPath, dailyTr});
+            variants.add(new String[]{intradayDailyPath, intradayTr});
+            variants.add(new String[]{intradayPath, dailyTr});
+            variants.add(new String[]{intradayPath, intradayTr});
+        }
+
+        for (String[] variant : variants) {
+            String pathValue = variant[0];
+            String trId = variant[1];
+            headers.set("tr_id", trId);
+            HttpEntity<String> entity = new HttpEntity<>(headers);
+
+            for (String marketDiv : parseMarketDivCodes()) {
+                attemptCount++;
+                String url = urlBase + pathValue
+                        + "?fid_cond_mrkt_div_code=" + marketDiv
+                        + "&fid_input_iscd=" + stockCode
+                        + "&fid_input_date_1=" + ymd
+                        + "&fid_input_hour_1=" + nowHms
+                        + "&fid_pw_data_incu_yn=Y";
+                try {
+                    ResponseEntity<Map> response = requestChartWithRetry(restTemplate, url, entity);
+                    Map<String, Object> body = response.getBody();
+                    if (body == null) {
+                        if (debugLog) {
+                            log.warn("Intraday empty body code={} date={} tr_id={} marketDiv={} path={}",
+                                    stockCode, date, trId, marketDiv, pathValue);
+                        }
+                        continue;
+                    }
+
+                    String rtCd = parseStringFromAny(body, "rt_cd", "msg_cd");
+                    String msg1 = parseStringFromAny(body, "msg1");
+
+                    Object outputObj = body.get("output2");
+                    if (!(outputObj instanceof List<?>)) {
+                        outputObj = body.get("output1");
+                    }
+                    if (!(outputObj instanceof List<?>)) {
+                        outputObj = body.get("output");
+                    }
+                    if (!(outputObj instanceof List<?> rows)) {
+                        if (debugLog) {
+                            log.warn("Intraday output missing code={} date={} tr_id={} marketDiv={} path={} rt_cd={} msg1={} keys={}",
+                                    stockCode, date, trId, marketDiv, pathValue, rtCd, msg1, body.keySet());
+                        }
+                        continue;
+                    }
+
+                    if (rows.isEmpty() && debugLog) {
+                        log.warn("Intraday output empty code={} date={} tr_id={} marketDiv={} path={} rt_cd={} msg1={}",
+                                stockCode, date, trId, marketDiv, pathValue, rtCd, msg1);
+                    }
+
+                    List<ChartDataDto> result = new ArrayList<>();
+                    for (Object rowObj : rows) {
+                        if (!(rowObj instanceof Map<?, ?> row)) continue;
+                        String hhmmss = normalizeHms(parseStringFromAny(row,
+                                "stck_cntg_hour",
+                                "aspr_acpt_hour",
+                                "cntg_hour",
+                                "hour"
+                        ));
+                        if (hhmmss == null) continue;
+
+                        Double open = parseDoubleFromAny(row, "stck_oprc", "stck_prpr", "stck_clpr");
+                        Double high = parseDoubleFromAny(row, "stck_hgpr", "stck_prpr", "stck_clpr");
+                        Double low = parseDoubleFromAny(row, "stck_lwpr", "stck_prpr", "stck_clpr");
+                        Double close = parseDoubleFromAny(row, "stck_prpr", "stck_clpr");
+                        if (open == null || high == null || low == null || close == null) continue;
+
+                        String rowDate = parseStringFromAny(row, "stck_bsop_date", "bsop_date", "trd_date");
+                        LocalDate rowLocalDate = date;
+                        if (rowDate != null && rowDate.matches("\\d{8}")) {
+                            try {
+                                rowLocalDate = LocalDate.parse(rowDate, DateTimeFormatter.ofPattern("yyyyMMdd"));
+                            } catch (Exception ignored) {
+                                rowLocalDate = date;
+                            }
+                        }
+                        String timeIso = rowLocalDate + "T" + hhmmss.substring(0, 2) + ":" + hhmmss.substring(2, 4) + ":" + hhmmss.substring(4, 6);
+                        Long volume = parseLongFromAny(row, "cntg_vol", "acml_vol", "stck_cntg_vol");
+                        result.add(new ChartDataDto(timeIso, round2(open), round2(high), round2(low), round2(close), volume));
+                    }
+
+                    if (!result.isEmpty()) {
+                        result.sort(Comparator.comparing(ChartDataDto::getTime));
+                        if (result.size() > limit) {
+                            return new ArrayList<>(result.subList(result.size() - limit, result.size()));
+                        }
+                        return result;
+                    }
+
+                    if (debugLog) {
+                        log.warn("Intraday parsed-empty code={} date={} tr_id={} marketDiv={} path={} rt_cd={} msg1={} rawRows={}",
+                                stockCode, date, trId, marketDiv, pathValue, rtCd, msg1, rows.size());
+                    }
+                } catch (Exception e) {
+                    lastError = e;
+                    if (debugLog) {
+                        log.warn("Intraday call exception code={} date={} tr_id={} marketDiv={} path={} message={}",
+                                stockCode, date, trId, marketDiv, pathValue, e.getMessage());
+                    }
+                }
+            }
+        }
+
+        if (lastError != null) {
+            log.warn("Intraday chart request failed code={} date={} attempts={} message={}",
+                    stockCode, date, attemptCount, lastError.getMessage());
+        } else if (debugLog) {
+            log.warn("Intraday chart returned empty code={} date={} attempts={} variants={}",
+                    stockCode, date, attemptCount, variants.size());
+        }
+        return List.of();
+    }
+
+    private List<ChartDataDto> aggregateIntradayCandles(List<ChartDataDto> source, int minutes, int limit) {
+        if (source == null || source.isEmpty()) return List.of();
+        Map<LocalDateTime, ChartDataDto> byBucket = new HashMap<>();
+        for (ChartDataDto row : source) {
+            if (row == null || row.getTime() == null || row.getTime().isBlank()) continue;
+            LocalDateTime ts;
+            try {
+                ts = LocalDateTime.parse(row.getTime());
+            } catch (Exception ignored) {
+                continue;
+            }
+            int flooredMinute = (ts.getMinute() / minutes) * minutes;
+            LocalDateTime bucket = ts.withMinute(flooredMinute).withSecond(0).withNano(0);
+            ChartDataDto prev = byBucket.get(bucket);
+            if (prev == null) {
+                byBucket.put(bucket, new ChartDataDto(bucket.toString(), row.getOpen(), row.getHigh(), row.getLow(), row.getClose(), row.getVolume()));
+                continue;
+            }
+            prev.setHigh(Math.max(prev.getHigh(), row.getHigh()));
+            prev.setLow(Math.min(prev.getLow(), row.getLow()));
+            prev.setClose(row.getClose());
+            Long v1 = prev.getVolume();
+            Long v2 = row.getVolume();
+            if (v1 == null) {
+                prev.setVolume(v2);
+            } else if (v2 != null) {
+                prev.setVolume(v1 + v2);
+            }
+        }
+        List<ChartDataDto> out = new ArrayList<>(byBucket.values());
+        out.sort(Comparator.comparing(ChartDataDto::getTime));
+        if (out.size() <= limit) return out;
+        return new ArrayList<>(out.subList(out.size() - limit, out.size()));
+    }
+
     private List<ChartDataDto> fetchDailyChartFromKis(String stockCode, LocalDate startLocalDate, LocalDate endLocalDate) {
         ensureAccessToken();
 
@@ -648,11 +1133,9 @@ public class StockService {
                 if (open == null || high == null || low == null || close == null) continue;
 
                 if (seenDates.add(formattedDate)) {
-                    Long volume = parseLongOrNull(d.get("acml_vol"));
-                    if (volume == null) {
-                        volume = parseLongOrNull(d.get("stck_acml_vol"));
-                    }
-                    chartData.add(new ChartDataDto(formattedDate, open, high, low, close, volume));
+                    Long volume = parseLongFromAny(d, "acml_vol", "stck_acml_vol", "cntg_vol", "stck_cntg_vol");
+                    Long turnover = parseLongFromAny(d, "acml_tr_pbmn", "stck_tr_pbmn", "tr_pbmn", "acml_tr_amount");
+                    chartData.add(new ChartDataDto(formattedDate, open, high, low, close, volume, turnover));
                 }
                 if (oldestInChunk == null || rawDate.compareTo(oldestInChunk) < 0) {
                     oldestInChunk = rawDate;
@@ -807,6 +1290,27 @@ public class StockService {
         return null;
     }
 
+    private String parseStringFromAny(Map<?, ?> source, String... keys) {
+        if (source == null || keys == null) return null;
+        for (String key : keys) {
+            if (key == null || key.isBlank()) continue;
+            Object raw = source.get(key);
+            if (raw == null) continue;
+            String value = String.valueOf(raw).trim();
+            if (!value.isEmpty() && !"null".equalsIgnoreCase(value)) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private String normalizeHms(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        String digits = raw.replaceAll("[^0-9]", "");
+        if (digits.length() < 6) return null;
+        return digits.substring(0, 6);
+    }
+
     private Map<String, Object> mergeOrderBookOutputs(Map<String, Object> body) {
         if (body == null || body.isEmpty()) return null;
         Map<String, Object> merged = new HashMap<>();
@@ -936,7 +1440,8 @@ public class StockService {
                 row.getHighPrice(),
                 row.getLowPrice(),
                 row.getClosePrice(),
-                row.getVolume()
+                row.getVolume(),
+                row.getTurnover()
         );
     }
 

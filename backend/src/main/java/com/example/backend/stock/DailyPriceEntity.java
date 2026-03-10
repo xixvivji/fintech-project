@@ -41,6 +41,9 @@ public class DailyPriceEntity {
     @Column
     private Long volume;
 
+    @Column
+    private Long turnover;
+
     public Long getId() {
         return id;
     }
@@ -103,5 +106,13 @@ public class DailyPriceEntity {
 
     public void setVolume(Long volume) {
         this.volume = volume;
+    }
+
+    public Long getTurnover() {
+        return turnover;
+    }
+
+    public void setTurnover(Long turnover) {
+        this.turnover = turnover;
     }
 }

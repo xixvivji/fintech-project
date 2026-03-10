@@ -1,5 +1,7 @@
 package com.example.backend.auth;
 
+import com.example.backend.cache.RedisSessionStoreService;
+
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -9,11 +11,13 @@ import org.springframework.transaction.annotation.Transactional;
 public class AuthService {
     private final UserRepository userRepository;
     private final JwtService jwtService;
+    private final RedisSessionStoreService sessionStoreService;
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
-    public AuthService(UserRepository userRepository, JwtService jwtService) {
+    public AuthService(UserRepository userRepository, JwtService jwtService, RedisSessionStoreService sessionStoreService) {
         this.userRepository = userRepository;
         this.jwtService = jwtService;
+        this.sessionStoreService = sessionStoreService;
     }
 
     @Transactional
@@ -54,6 +58,9 @@ public class AuthService {
         }
 
         JwtService.TokenIssueResult token = jwtService.issueToken(user);
+        long ttlSec = Math.max(60L, (token.getExpiresAt() - System.currentTimeMillis()) / 1000L);
+        sessionStoreService.cacheIssuedToken(token.getAccessToken(), user.getId(), ttlSec);
+        sessionStoreService.cacheUserProfile(user.getId(), java.util.Map.of("id", user.getId(), "name", user.getName()), java.time.Duration.ofMinutes(30));
         return new LoginResponseDto(
                 "Bearer",
                 token.getAccessToken(),

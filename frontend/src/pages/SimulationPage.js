@@ -2,6 +2,9 @@ import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import MinuteChartCard from "../components/MinuteChartCard";
 import StockChartCard from "../components/StockChartCard";
+import { createStockRealtimeSocket } from "../utils/stockRealtimeSocket";
+
+const ORDERBOOK_POLL_MS = 1500;
 
 export default function SimulationPage(props) {
   const {
@@ -68,8 +71,10 @@ export default function SimulationPage(props) {
   const [orderbook, setOrderbook] = useState(null);
   const [orderbookLoading, setOrderbookLoading] = useState(false);
   const [orderbookError, setOrderbookError] = useState("");
+  const [tradeQuote, setTradeQuote] = useState(null);
   const [isMarketOpenKst, setIsMarketOpenKst] = useState(true);
   const [chartTimeframe, setChartTimeframe] = useState("1m");
+  const [priceViewMode, setPriceViewMode] = useState("realtime");
   const [autoBuyForm, setAutoBuyForm] = useState({
     name: "",
     code: tradeCode || "005930",
@@ -86,20 +91,30 @@ export default function SimulationPage(props) {
     return `${getStockNameByCode?.(code) || code || "-"} ${qty}주 자동매수`;
   }, [autoBuyForm.code, autoBuyForm.quantity, getStockNameByCode]);
 
-  const chartTimeframeOptions = [
-    { key: "1m", label: "1m", bucketMinutes: 1 },
-    { key: "10m", label: "10m", bucketMinutes: 10 },
-    { key: "30m", label: "30m", bucketMinutes: 30 },
-    { key: "60m", label: "1h", bucketMinutes: 60 },
-    { key: "1d", label: "D", forcedPeriod: "DAY", months: 6 },
-    { key: "1w", label: "W", forcedPeriod: "WEEK", months: 24 },
-    { key: "1mo", label: "M", forcedPeriod: "MONTH", months: 120 },
-    { key: "1y", label: "Y", forcedPeriod: "YEAR", months: 120 },
+  const intradayTimeframeOptions = [
+    { key: "1m", label: "1분", bucketMinutes: 1 },
+    { key: "10m", label: "10분", bucketMinutes: 10 },
+    { key: "30m", label: "30분", bucketMinutes: 30 },
+    { key: "60m", label: "1시간", bucketMinutes: 60 },
   ];
+  const dailyTimeframeOptions = [
+    { key: "1d", label: "일", forcedPeriod: "DAY", months: 6 },
+    { key: "1w", label: "주", forcedPeriod: "WEEK", months: 24 },
+    { key: "1mo", label: "월", forcedPeriod: "MONTH", months: 120 },
+    { key: "1y", label: "년", forcedPeriod: "YEAR", months: 120 },
+  ];
+  const chartTimeframeOptions = priceViewMode === "realtime" ? intradayTimeframeOptions : dailyTimeframeOptions;
   const activeTimeframe = chartTimeframeOptions.find((x) => x.key === chartTimeframe) || chartTimeframeOptions[0];
-  const isIntradayTimeframe = Boolean(activeTimeframe.bucketMinutes);
+  const isIntradayTimeframe = Boolean(activeTimeframe?.bucketMinutes);
 
   const authHeaders = () => (authToken ? { Authorization: `Bearer ${authToken}` } : {});
+
+  useEffect(() => {
+    const isValid = chartTimeframeOptions.some((x) => x.key === chartTimeframe);
+    if (!isValid) {
+      setChartTimeframe(chartTimeframeOptions[0]?.key || "1m");
+    }
+  }, [chartTimeframeOptions, chartTimeframe]);
 
   useEffect(() => {
     const computeIsOpen = () => {
@@ -156,28 +171,74 @@ export default function SimulationPage(props) {
     const loadOrderbook = async (first = false) => {
       if (first) setOrderbookLoading(true);
       try {
-        const res = await axios.get(`${apiBaseUrl}/api/stock/orderbook/${tradeCode}`);
+        const res = await axios.get(apiBaseUrl + "/api/stock/orderbook/" + tradeCode);
         if (cancelled) return;
         setOrderbook(res.data || null);
         setOrderbookError("");
       } catch (err) {
         if (cancelled) return;
-        setOrderbookError(err?.response?.data?.message || err?.message || "호가 정보를 불러오지 못했습니다.");
+        setOrderbookError(err?.response?.data?.message || err?.message || "Failed to load orderbook.");
       } finally {
         if (first && !cancelled) setOrderbookLoading(false);
       }
     };
 
+    const loadQuote = async () => {
+      try {
+        const res = await axios.get(apiBaseUrl + "/api/stock/quote/" + tradeCode);
+        if (cancelled) return;
+        if (res?.data) {
+          setTradeQuote(res.data);
+          if (res.data?.price) {
+            setSimSelectedPrice?.({
+              price: Number(res.data.price),
+              time: new Date().toISOString(),
+            });
+          }
+        }
+      } catch (_) {
+      }
+    };
+
     loadOrderbook(true);
+    loadQuote();
+
+    const socket = createStockRealtimeSocket(apiBaseUrl, tradeCode, {
+      onMessage: (payload) => {
+        if (cancelled || !payload || payload.type !== "stock.realtime") return;
+        if (payload.orderbook) {
+          setOrderbook(payload.orderbook);
+          setOrderbookError("");
+        }
+        if (payload.quote) {
+          setTradeQuote(payload.quote);
+        }
+        if (payload.quote?.price) {
+          setSimSelectedPrice?.({
+            price: Number(payload.quote.price),
+            time: new Date(payload.sentAt || Date.now()).toISOString(),
+          });
+        }
+      },
+      onError: () => {
+        if (!cancelled) {
+          setOrderbookError((prev) => prev || "Realtime socket unstable; polling fallback is active.");
+        }
+      },
+    });
+
     const timer = window.setInterval(() => {
       if (document.hidden) return;
       loadOrderbook(false);
-    }, 2000);
+      loadQuote();
+    }, ORDERBOOK_POLL_MS * 2);
+
     return () => {
       cancelled = true;
+      socket.close();
       window.clearInterval(timer);
     };
-  }, [apiBaseUrl, tradeCode]);
+  }, [apiBaseUrl, tradeCode, setSimSelectedPrice]);
 
   const saveAutoBuyRule = async () => {
     try {
@@ -486,13 +547,42 @@ export default function SimulationPage(props) {
             </strong>
             <span>
               현재가:{" "}
-              {simSelectedPrice?.price
-                ? `${fmt(Number(simSelectedPrice.price))}원`
-                : selectedTradeHolding?.currentPrice
-                  ? `${fmt(Number(selectedTradeHolding.currentPrice))}원`
-                  : "-"}
+              {tradeQuote?.price
+                ? fmt(Number(tradeQuote.price)) + "원"
+                : simSelectedPrice?.price
+                  ? fmt(Number(simSelectedPrice.price)) + "원"
+                  : selectedTradeHolding?.currentPrice
+                    ? fmt(Number(selectedTradeHolding.currentPrice)) + "원"
+                    : "-"}
             </span>
             <span className="sim-selected-stock-date">기준일 {currentDate}</span>
+          </div>
+
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 8, fontSize: 12, color: "#334155" }}>
+            <span>전일대비: <strong>{tradeQuote?.change != null ? (Number(tradeQuote.change) > 0 ? "+" : "") + Number(tradeQuote.change).toFixed(2) : "-"}</strong></span>
+            <span>등락률: <strong>{tradeQuote?.changeRate != null ? (Number(tradeQuote.changeRate) > 0 ? "+" : "") + Number(tradeQuote.changeRate).toFixed(2) + "%" : "-"}</strong></span>
+            <span>거래량: <strong>{tradeQuote?.volume != null ? fmt(Number(tradeQuote.volume)) : "-"}</strong></span>
+            <span>{"\uAC70\uB798\uB300\uAE08"}: <strong>{tradeQuote?.turnover != null ? fmt(Number(tradeQuote.turnover)) + "\uC6D0" : "-"}</strong></span>
+            <span>{"\uC2DC\uAC00"}: <strong>{tradeQuote?.open != null ? fmt(Number(tradeQuote.open)) + "\uC6D0" : "-"}</strong></span>
+            <span>{"\uACE0\uAC00"}: <strong>{tradeQuote?.high != null ? fmt(Number(tradeQuote.high)) + "\uC6D0" : "-"}</strong></span>
+            <span>{"\uC800\uAC00"}: <strong>{tradeQuote?.low != null ? fmt(Number(tradeQuote.low)) + "\uC6D0" : "-"}</strong></span>
+          </div>
+
+          <div className="app-toolbar-row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+            <button
+              type="button"
+              className={priceViewMode === "realtime" ? "sim-order-tab active" : "sim-order-tab"}
+              onClick={() => setPriceViewMode("realtime")}
+            >
+              실시간
+            </button>
+            <button
+              type="button"
+              className={priceViewMode === "daily" ? "sim-order-tab active" : "sim-order-tab"}
+              onClick={() => setPriceViewMode("daily")}
+            >
+              일별
+            </button>
           </div>
 
           <div className="app-toolbar-row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
@@ -517,7 +607,7 @@ export default function SimulationPage(props) {
               bucketMinutes={activeTimeframe.bucketMinutes}
               onLatestPriceChange={setSimSelectedPrice}
               title={`${getStockNameByCode(tradeCode)} (${tradeCode})`}
-              subtitle={`Realtime ${activeTimeframe.label} candles`}
+              subtitle={`실시간 ${activeTimeframe.label} 차트`}
             />
           ) : (
             <StockChartCard
@@ -528,10 +618,12 @@ export default function SimulationPage(props) {
               endDate={chartEndDate}
               forcedPeriod={activeTimeframe.forcedPeriod}
               hidePeriodSelector
+              showDailyTable={priceViewMode === "daily"}
+              dailyTableLimit={20}
               height={220}
               onLatestPriceChange={setSimSelectedPrice}
               title={`${getStockNameByCode(tradeCode)} (${tradeCode})`}
-              subtitle={`${activeTimeframe.label} aggregated chart`}
+              subtitle={`${activeTimeframe.label} 차트`}
             />
           )}
 

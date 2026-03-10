@@ -21,6 +21,17 @@ public class StockController {
         return stockService.getDailyChart(code, months, endDate);
     }
 
+    @GetMapping("/chart/intraday/{code}")
+    public List<ChartDataDto> getIntradayChart(
+            @PathVariable String code,
+            @RequestParam(defaultValue = "1") int minutes,
+            @RequestParam(defaultValue = "240") int limit,
+            @RequestParam(required = false) String endDate,
+            @RequestParam(defaultValue = "1") int days
+    ) {
+        return stockService.getIntradayChart(code, minutes, limit, endDate, days);
+    }
+
     @GetMapping("/top-volume")
     public List<TopVolumeStockDto> getTopVolume(
             @RequestParam(required = false) String date,
@@ -47,6 +58,14 @@ public class StockController {
         return stockService.getOrderBook(code);
     }
 
+    @PostMapping("/backfill/intraday")
+    public IntradayBackfillResponseDto backfillIntraday(@RequestBody IntradayBackfillRequestDto request) {
+        if (request == null) {
+            throw new IllegalArgumentException("request is required.");
+        }
+        return stockService.backfillIntradayCandles(request.getCodes(), request.getLimit(), request.getDays(), request.getEndDate());
+    }
+
     @PostMapping("/backfill")
     public StockBackfillResponseDto backfill(@RequestBody StockBackfillRequestDto request) {
         if (request == null) {
@@ -60,3 +79,4 @@ public class StockController {
         );
     }
 }
+

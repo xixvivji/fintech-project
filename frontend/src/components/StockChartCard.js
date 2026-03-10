@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createChart } from "lightweight-charts";
 import axios from "axios";
 
@@ -18,6 +18,8 @@ function normalizeCandles(rows) {
       high: Number(r?.high),
       low: Number(r?.low),
       close: Number(r?.close),
+      volume: Number.isFinite(Number(r?.volume)) ? Number(r?.volume) : null,
+      turnover: Number.isFinite(Number(r?.turnover)) ? Number(r?.turnover) : null,
     }))
     .filter((r) => r.time && [r.open, r.high, r.low, r.close].every(Number.isFinite));
 }
@@ -83,6 +85,36 @@ function fmtPrice(v) {
   return new Intl.NumberFormat("ko-KR").format(Math.round(Number(v)));
 }
 
+function fmtDateMd(time) {
+  if (!time) return "-";
+  const d = new Date(`${time}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return String(time);
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${mm}.${dd}`;
+}
+
+function fmtSignedPercent(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "-";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(2)}%`;
+}
+
+function fmtVolume(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "-";
+  return new Intl.NumberFormat("ko-KR").format(Math.round(n));
+}
+
+function fmtTurnover(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return "-";
+  if (n >= 1_0000_0000_0000) return `${(n / 1_0000_0000_0000).toFixed(1)}\uC870\uC6D0`;
+  if (n >= 1_0000_0000) return `${(n / 1_0000_0000).toFixed(1)}\uC5B5\uC6D0`;
+  return `${new Intl.NumberFormat("ko-KR").format(Math.round(n))}\uC6D0`;
+}
+
 function mergeCandles(existingRows, incomingRows) {
   const merged = new Map();
   for (const row of normalizeCandles(existingRows)) {
@@ -139,6 +171,8 @@ export default function StockChartCard({
   compareLabel,
   forcedPeriod,
   hidePeriodSelector = false,
+  showDailyTable = false,
+  dailyTableLimit = 20,
 }) {
   const wrapRef = useRef(null);
   const chartRef = useRef(null);
@@ -154,6 +188,33 @@ export default function StockChartCard({
   const [error, setError] = useState("");
   const [period, setPeriod] = useState(forcedPeriod || "DAY");
   const [hoverInfo, setHoverInfo] = useState(null);
+  const [tableRowsSource, setTableRowsSource] = useState([]);
+
+  const dailyRows = useMemo(() => {
+    const rows = normalizeCandles(tableRowsSource);
+    if (!rows.length) return [];
+    const out = [];
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+      const r = rows[i];
+      const prev = i > 0 ? rows[i - 1] : null;
+      const changeRate = prev?.close ? ((r.close - prev.close) / prev.close) * 100 : null;
+      const turnover = Number.isFinite(Number(r.turnover))
+        ? Number(r.turnover)
+        : (Number.isFinite(Number(r.volume)) ? Number(r.volume) * Number(r.close) : null);
+      out.push({
+        time: r.time,
+        open: r.open,
+        high: r.high,
+        low: r.low,
+        close: r.close,
+        volume: r.volume,
+        turnover,
+        changeRate,
+      });
+      if (out.length >= Math.max(1, Number(dailyTableLimit) || 20)) break;
+    }
+    return out;
+  }, [tableRowsSource, dailyTableLimit]);
 
   useEffect(() => {
     periodRef.current = period;
@@ -278,6 +339,7 @@ export default function StockChartCard({
           : aggregateCandles(nextRows, activePeriod).length;
         const addedCount = Math.max(0, nextShownLength - prevShownLength);
         mainRowsRef.current = nextRows;
+        setTableRowsSource(nextRows);
         applyMainSeriesData(nextRows);
 
         const newEarliest = nextRows[0]?.time;
@@ -336,6 +398,7 @@ export default function StockChartCard({
           const mainRel = toRelativeSeries(mainRes);
           const compareRel = toRelativeSeries(compareRes);
           mainRowsRef.current = normalizeCandles(mainRes);
+          setTableRowsSource([]);
           if (!mainRel.length) {
             setError("비교용 차트 데이터가 없습니다.");
             mainSeriesRef.current.setData([]);
@@ -350,6 +413,7 @@ export default function StockChartCard({
         } else {
           const rows = normalizeCandles(mainRes);
           mainRowsRef.current = rows;
+          setTableRowsSource(rows);
           reachedMinHistoryRef.current = rows.length > 0 && rows[0].time <= MIN_HISTORY_DATE;
           if (!rows.length) {
             setError("차트 데이터가 없습니다.");
@@ -409,6 +473,7 @@ export default function StockChartCard({
         };
         rows[rows.length - 1] = updated;
         mainRowsRef.current = rows;
+        setTableRowsSource(rows);
 
         if (compareCode) {
           const rel = toRelativeSeries(rows);
@@ -487,6 +552,38 @@ export default function StockChartCard({
       {loading && <div style={{ marginBottom: 8, color: "#64748b", fontSize: 13 }}>불러오는 중...</div>}
       {error && <div style={{ marginBottom: 8, color: "#dc2626", fontSize: 13 }}>{error}</div>}
       <div ref={wrapRef} style={{ minHeight: height, cursor: "crosshair" }} />
+      {showDailyTable && !compareCode && dailyRows.length > 0 && (
+        <div style={{ marginTop: 12, overflowX: "auto" }}>
+          <table className="sim-order-table">
+            <thead>
+              <tr>
+                <th>{"\uC77C\uC790"}</th>
+                <th className="num">{"\uC885\uAC00"}</th>
+                <th className="num">{"\uB4F1\uB77D\uB960"}</th>
+                <th className="num">{"\uAC70\uB798\uB7C9 (\uC8FC)"}</th>
+                <th className="num">{"\uAC70\uB798\uB300\uAE08"}</th>
+                <th className="num">{"\uC2DC\uAC00"}</th>
+                <th className="num">{"\uACE0\uAC00"}</th>
+                <th className="num">{"\uC800\uAC00"}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {dailyRows.map((r) => (
+                <tr key={`daily-row-${r.time}`}>
+                  <td>{fmtDateMd(r.time)}</td>
+                  <td className="num">{fmtPrice(r.close)}{"\uC6D0"}</td>
+                  <td className={`num ${Number(r.changeRate) >= 0 ? "up" : "down"}`}>{fmtSignedPercent(r.changeRate)}</td>
+                  <td className="num">{fmtVolume(r.volume)}</td>
+                  <td className="num">{fmtTurnover(r.turnover)}</td>
+                  <td className="num">{fmtPrice(r.open)}{"\uC6D0"}</td>
+                  <td className="num">{fmtPrice(r.high)}{"\uC6D0"}</td>
+                  <td className="num">{fmtPrice(r.low)}{"\uC6D0"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

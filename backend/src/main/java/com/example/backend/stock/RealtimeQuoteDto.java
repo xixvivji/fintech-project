@@ -9,6 +9,8 @@ public class RealtimeQuoteDto {
     private Double low;
     private Double change;
     private Double changeRate;
+    private Long volume;
+    private Long turnover;
 
     public RealtimeQuoteDto(
             String code,
@@ -18,7 +20,9 @@ public class RealtimeQuoteDto {
             Double high,
             Double low,
             Double change,
-            Double changeRate
+            Double changeRate,
+            Long volume,
+            Long turnover
     ) {
         this.code = code;
         this.time = time;
@@ -28,6 +32,8 @@ public class RealtimeQuoteDto {
         this.low = low;
         this.change = change;
         this.changeRate = changeRate;
+        this.volume = volume;
+        this.turnover = turnover;
     }
 
     public String getCode() {
@@ -60,5 +66,13 @@ public class RealtimeQuoteDto {
 
     public Double getChangeRate() {
         return changeRate;
+    }
+
+    public Long getVolume() {
+        return volume;
+    }
+
+    public Long getTurnover() {
+        return turnover;
     }
 }

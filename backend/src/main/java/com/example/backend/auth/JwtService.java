@@ -1,5 +1,7 @@
 package com.example.backend.auth;
 
+import com.example.backend.cache.RedisSessionStoreService;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -21,16 +23,19 @@ public class JwtService {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final byte[] secret;
     private final long expiresSec;
+    private final RedisSessionStoreService sessionStoreService;
 
     public JwtService(
             @Value("${auth.jwt-secret}") String jwtSecret,
-            @Value("${auth.jwt-expire-seconds:86400}") long expiresSec
+            @Value("${auth.jwt-expire-seconds:86400}") long expiresSec,
+            RedisSessionStoreService sessionStoreService
     ) {
         if (jwtSecret == null || jwtSecret.isBlank()) {
             throw new IllegalStateException("JWT secret is required.");
         }
         this.secret = jwtSecret.getBytes(StandardCharsets.UTF_8);
         this.expiresSec = Math.max(60L, expiresSec);
+        this.sessionStoreService = sessionStoreService;
     }
 
     public TokenIssueResult issueToken(UserEntity user) {
@@ -61,6 +66,9 @@ public class JwtService {
         if (token == null || token.isBlank()) {
             throw new IllegalArgumentException("Access token is required.");
         }
+        if (sessionStoreService.isBlocked(token)) {
+            throw new IllegalArgumentException("로그아웃된 토큰입니다.");
+        }
         String[] parts = token.split("\\.");
         if (parts.length != 3) {
             throw new IllegalArgumentException("유효하지 않은 토큰 형식입니다.");
@@ -87,6 +95,12 @@ public class JwtService {
         }
     }
 
+    public void revokeToken(String token, long ttlSeconds) {
+        if (token == null || token.isBlank()) return;
+        long safeTtl = Math.max(60L, ttlSeconds);
+        sessionStoreService.blockToken(token, safeTtl);
+    }
+
     private String extractBearerToken(String authorizationHeader) {
         if (authorizationHeader == null || authorizationHeader.isBlank()) {
             throw new IllegalArgumentException("Authorization 헤더가 필요합니다.");
@@ -103,7 +117,7 @@ public class JwtService {
             byte[] json = objectMapper.writeValueAsBytes(value);
             return URL_ENCODER.encodeToString(json);
         } catch (Exception e) {
-            throw new IllegalStateException("JWT 생성 실패");
+            throw new IllegalStateException("JWT 인코딩 실패");
         }
     }
 
