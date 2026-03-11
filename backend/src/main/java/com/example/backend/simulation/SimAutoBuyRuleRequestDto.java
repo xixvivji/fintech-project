@@ -1,12 +1,28 @@
 package com.example.backend.simulation;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
+@Schema(description = "???? ?? ??/?? ??")
 public class SimAutoBuyRuleRequestDto {
+    @Schema(description = "?? ??", example = "???? ??? ??")
     private String name;
+
+    @Schema(description = "6?? ????", example = "005930")
     private String code;
+
+    @Schema(description = "??? ?? ??", example = "1")
     private Integer quantity;
+
+    @Schema(description = "?? ??", example = "DAILY", allowableValues = {"DAILY", "WEEKDAYS", "WEEKLY"})
     private String frequency;
+
+    @Schema(description = "?? ??", example = "true", nullable = true)
     private Boolean enabled;
+
+    @Schema(description = "???(yyyy-MM-dd)", example = "2026-03-11", nullable = true)
     private String startDate;
+
+    @Schema(description = "???(yyyy-MM-dd)", example = "2026-12-31", nullable = true)
     private String endDate;
 
     public String getName() { return name; }
